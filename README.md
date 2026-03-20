@@ -102,28 +102,41 @@ curl http://127.0.0.1:3456/health
 
 ### Connect OpenCode
 
-#### Environment Variables
+#### Per-Terminal Launcher (recommended)
 
 ```bash
+./bin/oc.sh
+```
+
+Each terminal gets its own proxy on a random port. No port conflicts, no concurrency crashes. The proxy starts automatically, connects OpenCode, and cleans up when you exit. Sessions resume across terminals via a shared session file.
+
+Add to your shell config for easy access:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+alias oc='/path/to/opencode-claude-max-proxy/bin/oc.sh'
+```
+
+#### Shared Proxy
+
+If you prefer a single long-running proxy:
+
+```bash
+# Terminal 1: start the proxy
+CLAUDE_PROXY_PASSTHROUGH=1 bun run proxy
+
+# Terminal 2+: connect OpenCode
 ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode
 ```
 
 The `ANTHROPIC_API_KEY` can be any non-empty string — the proxy doesn't use it. Authentication is handled by your `claude login` session.
 
-#### Shell Alias
+#### OpenCode Desktop / Config File
 
-```bash
-# Add to ~/.zshrc or ~/.bashrc or ~/.config/fish/config.fish
-alias oc='ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode'
-```
-
-#### OpenCode Config File
-
-Alternatively, the proxy URL and API key can be set globally in `~/.config/opencode/opencode.json`. This has the benefit of working in OpenCode Desktop as well.
+For OpenCode Desktop (or to avoid env vars), add the proxy to `~/.config/opencode/opencode.json`. Start the shared proxy in the background and Desktop connects automatically.
 
 ```json
 {
-  ...
   "provider": {
     "anthropic": {
       "options": {
@@ -132,9 +145,10 @@ Alternatively, the proxy URL and API key can be set globally in `~/.config/openc
       }
     }
   }
-  ...
 }
 ```
+
+> **Tip:** Use the shared proxy with the supervisor for Desktop: `CLAUDE_PROXY_PASSTHROUGH=1 bun run proxy`. Both Desktop and terminal instances share sessions via the file store.
 
 ## Modes
 
@@ -182,6 +196,7 @@ The proxy tracks SDK session IDs and resumes conversations on follow-up requests
 
 - **Faster responses** — no re-processing of conversation history
 - **Better context** — the SDK remembers tool results from previous turns
+- **Works across terminals** — sessions are shared via a file store at `~/.cache/opencode-claude-max-proxy/sessions.json`
 
 Session tracking works two ways:
 
@@ -192,7 +207,7 @@ Session tracking works two ways:
 
 2. **Fingerprint-based** (automatic fallback) — hashes the first user message to identify returning conversations
 
-Sessions are cached for 24 hours.
+Sessions are cached for 24 hours. When using per-terminal proxies (`oc.sh`), the shared file store ensures a session started in one terminal can be resumed from another.
 
 ## Configuration
 
@@ -207,26 +222,19 @@ Sessions are cached for 24 hours.
 
 ## Concurrency
 
-The proxy supports multiple simultaneous OpenCode instances. Each request spawns its own independent SDK subprocess — run as many terminals as you want. All concurrent responses are delivered correctly.
+**Per-terminal proxies (`oc.sh`)** are the recommended approach for multiple terminals. Each OpenCode instance gets its own proxy — no concurrency issues at all.
 
-**Use the auto-restart supervisor** (recommended):
-
-```bash
-CLAUDE_PROXY_PASSTHROUGH=1 bun run proxy
-# or directly:
-CLAUDE_PROXY_PASSTHROUGH=1 ./bin/claude-proxy-supervisor.sh
-```
+**Shared proxy** supports concurrent requests but has a known limitation:
 
 > **⚠️ Known Issue: Bun SSE Crash ([oven-sh/bun#17947](https://github.com/oven-sh/bun/issues/17947))**
 >
-> The Claude Agent SDK's `cli.js` subprocess is compiled with Bun, which has a known segfault in `structuredCloneForStream` during cleanup of concurrent streaming responses. This affects all runtimes (Bun, Node.js via tsx) because the crash originates in the SDK's child process, not in the proxy itself.
+> The Claude Agent SDK's `cli.js` subprocess (compiled with Bun) has a known segfault during cleanup of concurrent streaming responses.
 >
-> **What this means in practice:**
-> - **Sequential requests (1 terminal):** No impact. Never crashes.
-> - **Concurrent requests (2+ terminals):** All responses are delivered correctly. The crash occurs *after* responses complete, during stream cleanup. No work is lost.
-> - **After a crash:** The supervisor restarts the proxy in ~1-3 seconds. If a new request arrives during this window, OpenCode shows "Unable to connect" — just retry.
+> - **All responses are delivered correctly** — the crash only occurs after responses complete
+> - **The supervisor auto-restarts** in ~1-3 seconds
+> - **Per-terminal proxies avoid this entirely** — no concurrency, no crash
 >
-> We are monitoring the upstream Bun issue for a fix. Once patched, the supervisor becomes optional.
+> We are monitoring the upstream Bun issue for a fix.
 
 ## Model Mapping
 
