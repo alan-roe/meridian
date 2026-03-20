@@ -1,7 +1,6 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { query } from "@anthropic-ai/claude-agent-sdk"
-import PQueue from "p-queue"
 import type { Context } from "hono"
 import type { ProxyConfig } from "./types"
 import { DEFAULT_PROXY_CONFIG } from "./types"
@@ -14,6 +13,7 @@ import { opencodeMcpServer } from "../mcpTools"
 import { randomUUID } from "crypto"
 import { withClaudeLogContext } from "../logger"
 
+// Block SDK built-in tools so Claude only uses MCP tools (which have correct param names)
 const BLOCKED_BUILTIN_TOOLS = [
   "Read", "Write", "Edit", "MultiEdit",
   "Bash", "Glob", "Grep", "NotebookEdit",
@@ -30,9 +30,6 @@ const ALLOWED_MCP_TOOLS = [
   `mcp__${MCP_SERVER_NAME}__glob`,
   `mcp__${MCP_SERVER_NAME}__grep`
 ]
-
-// Queue to serialize Claude Agent SDK queries and avoid ~60s delay on concurrent requests
-const requestQueue = new PQueue({ concurrency: 1 })
 
 function resolveClaudeExecutable(): string {
   // 1. Try the SDK's bundled cli.js (same dir as this module's SDK)
@@ -92,6 +89,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         const model = mapModelToClaudeModel(body.model || "sonnet")
         const stream = body.stream ?? true
 
+        // Debug: log request details
+        const msgSummary = body.messages?.map((m: any) => {
+          const contentTypes = Array.isArray(m.content)
+            ? m.content.map((b: any) => b.type).join(",")
+            : "string"
+          return `${m.role}[${contentTypes}]`
+        }).join(" → ")
+        console.error(`[PROXY] ${requestMeta.requestId} model=${model} stream=${stream} tools=${body.tools?.length ?? 0} msgs=${msgSummary}`)
+
         claudeLog("request.received", {
           model,
           stream,
@@ -113,18 +119,38 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         }
       }
 
-      // Convert messages to a text prompt
+      // Extract available agent types from the Task tool definition and inject as a hint.
+      // This prevents Claude from guessing wrong agent names (e.g., "Explore" instead of "explore").
+      if (Array.isArray(body.tools)) {
+        const taskTool = body.tools.find((t: any) => t.name === "task" || t.name === "Task")
+        if (taskTool?.description) {
+          const agentMatch = taskTool.description.match(/Available agent types.*?:\n((?:- \w[\w-]*:.*\n?)+)/s)
+          if (agentMatch) {
+            const agentNames = [...agentMatch[1].matchAll(/^- (\w[\w-]*):/gm)].map(m => m[1])
+            if (agentNames.length > 0) {
+              systemContext += `\n\nIMPORTANT: When using the task/Task tool, the subagent_type parameter must be one of these exact values (case-sensitive, lowercase): ${agentNames.join(", ")}. Do NOT capitalize or modify these names.`
+            }
+          }
+        }
+      }
+
+      // Convert messages to a text prompt, preserving all content types
       const conversationParts = body.messages
-        ?.map((m: { role: string; content: string | Array<{ type: string; text?: string }> }) => {
+        ?.map((m: { role: string; content: string | Array<{ type: string; text?: string; content?: string; tool_use_id?: string; name?: string; input?: unknown; id?: string }> }) => {
           const role = m.role === "assistant" ? "Assistant" : "Human"
           let content: string
           if (typeof m.content === "string") {
             content = m.content
           } else if (Array.isArray(m.content)) {
             content = m.content
-              .filter((block: any) => block.type === "text" && block.text)
-              .map((block: any) => block.text)
-              .join("")
+              .map((block: any) => {
+                if (block.type === "text" && block.text) return block.text
+                if (block.type === "tool_use") return `[Tool Use: ${block.name}(${JSON.stringify(block.input)})]`
+                if (block.type === "tool_result") return `[Tool Result for ${block.tool_use_id}: ${typeof block.content === "string" ? block.content : JSON.stringify(block.content)}]`
+                return ""
+              })
+              .filter(Boolean)
+              .join("\n")
           } else {
             content = String(m.content)
           }
@@ -138,7 +164,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         : conversationParts
 
         if (!stream) {
-          let fullContent = ""
+          const contentBlocks: Array<Record<string, unknown>> = []
           let assistantMessages = 0
           const upstreamStartAt = Date.now()
           let firstChunkAt: number | undefined
@@ -152,11 +178,26 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
                 maxTurns: 100,
                 model,
                 pathToClaudeCodeExecutable: claudeExecutable,
+                permissionMode: "bypassPermissions",
+                allowDangerouslySkipPermissions: true,
                 disallowedTools: [...BLOCKED_BUILTIN_TOOLS],
                 allowedTools: [...ALLOWED_MCP_TOOLS],
                 mcpServers: {
                   [MCP_SERVER_NAME]: opencodeMcpServer
-                }
+                },
+                // Deny Task tool at SDK level — OpenCode handles subagent delegation.
+                // The tool_use block is still emitted in the stream for OpenCode to handle.
+                canUseTool: async (toolName: string) => {
+                  if (toolName === "Task" || toolName === "task") {
+                    return {
+                      behavior: "deny" as const,
+                      message: "Task delegation is handled by the client. Returning tool_use to client.",
+                    }
+                  }
+                  return {
+                    behavior: "allow" as const,
+                  }
+                },
               }
             })
 
@@ -172,10 +213,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
                   })
                 }
 
+                // Preserve ALL content blocks (text, tool_use, thinking, etc.)
                 for (const block of message.message.content) {
-                  if (block.type === "text") {
-                    fullContent += block.text
+                  const b = block as Record<string, unknown>
+                  // Normalize task tool_use: lowercase subagent_type
+                  if (b.type === "tool_use" && typeof b.name === "string" &&
+                      (b.name === "task" || b.name === "Task") &&
+                      b.input && typeof (b.input as any).subagent_type === "string") {
+                    (b.input as any).subagent_type = (b.input as any).subagent_type.toLowerCase()
                   }
+                  contentBlocks.push(b)
                 }
               }
             }
@@ -196,28 +243,34 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
             throw error
           }
 
-          // If no text content was produced (e.g. only tool_use), return a fallback
-          const fallbackUsed = !fullContent
-          if (fallbackUsed) {
-            fullContent = "I can help with that. Could you provide more details about what you'd like me to do?"
-            claudeLog("response.fallback_used", { mode: "non_stream", reason: "no_text_content" })
+          // Determine stop_reason based on content: tool_use if any tool blocks, else end_turn
+          const hasToolUse = contentBlocks.some((b) => b.type === "tool_use")
+          const stopReason = hasToolUse ? "tool_use" : "end_turn"
+
+          // If no content at all, add a fallback text block
+          if (contentBlocks.length === 0) {
+            contentBlocks.push({
+              type: "text",
+              text: "I can help with that. Could you provide more details about what you'd like me to do?"
+            })
+            claudeLog("response.fallback_used", { mode: "non_stream", reason: "no_content_blocks" })
           }
 
           claudeLog("response.completed", {
             mode: "non_stream",
             model,
             durationMs: Date.now() - requestStartAt,
-            responseChars: fullContent.length,
-            fallbackUsed
+            contentBlocks: contentBlocks.length,
+            hasToolUse
           })
 
           return c.json({
             id: `msg_${Date.now()}`,
             type: "message",
             role: "assistant",
-            content: [{ type: "text", text: fullContent }],
+            content: contentBlocks,
             model: body.model,
-            stop_reason: "end_turn",
+            stop_reason: stopReason,
             usage: { input_tokens: 0, output_tokens: 0 }
           })
         }
@@ -265,11 +318,24 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
                   model,
                   pathToClaudeCodeExecutable: claudeExecutable,
                   includePartialMessages: true,
+                  permissionMode: "bypassPermissions",
+                  allowDangerouslySkipPermissions: true,
                   disallowedTools: [...BLOCKED_BUILTIN_TOOLS],
                   allowedTools: [...ALLOWED_MCP_TOOLS],
                   mcpServers: {
                     [MCP_SERVER_NAME]: opencodeMcpServer
-                  }
+                  },
+                  canUseTool: async (toolName: string) => {
+                    if (toolName === "Task" || toolName === "task") {
+                      return {
+                        behavior: "deny" as const,
+                        message: "Task delegation is handled by the client. Returning tool_use to client.",
+                      }
+                    }
+                    return {
+                      behavior: "allow" as const,
+                    }
+                  },
                 }
               })
 
@@ -294,6 +360,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
               }, 15_000)
 
               const skipBlockIndices = new Set<number>()
+              const taskBlockIndices = new Set<number>() // Track task tool blocks for agent name normalization
 
               try {
                 for await (const message of response) {
@@ -313,45 +380,66 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
                     }
 
                     const event = message.event
-                    const eventType = event.type
+                    const eventType = (event as any).type
                     const eventIndex = (event as any).index as number | undefined
 
-                    // content block indices are message-scoped; reset skip state per message
+                    // Track MCP tool blocks (mcp__opencode__*) — these are internal tools
+                    // that the SDK executes. Don't forward them to OpenCode.
                     if (eventType === "message_start") {
                       skipBlockIndices.clear()
                     }
 
-                    // Filter out tool_use content blocks — OpenCode expects text only
                     if (eventType === "content_block_start") {
                       const block = (event as any).content_block
-                      if (block?.type === "tool_use") {
-                        if (eventIndex !== undefined) skipBlockIndices.add(eventIndex)
-                        continue
+                      if (block?.type === "tool_use" && typeof block.name === "string") {
+                        if (block.name.startsWith("mcp__")) {
+                          if (eventIndex !== undefined) skipBlockIndices.add(eventIndex)
+                          continue
+                        }
+                        // Track task tool blocks for agent name normalization
+                        if ((block.name === "task" || block.name === "Task") && eventIndex !== undefined) {
+                          taskBlockIndices.add(eventIndex)
+                        }
                       }
                     }
 
-                    // Skip deltas and stops for tool_use blocks
+                    // Skip deltas and stops for MCP tool blocks
                     if (eventIndex !== undefined && skipBlockIndices.has(eventIndex)) {
                       continue
                     }
 
-                    // Override message_delta to always show end_turn
-                    if (eventType === "message_delta") {
-                      const patched = {
-                        ...event,
-                        delta: { ...((event as any).delta || {}), stop_reason: "end_turn" },
-                        usage: (event as any).usage || { output_tokens: 0 }
+                    // For message_delta/message_stop: only skip if ALL content blocks in this
+                    // message were MCP tools (i.e., nothing was forwarded to the client)
+                    if (eventType === "message_delta" || eventType === "message_stop") {
+                      // If we forwarded any content blocks, forward the message events too
+                      const hasForwardedContent = eventsForwarded > 0 || skipBlockIndices.size === 0
+                      if (!hasForwardedContent && (event as any).delta?.stop_reason === "tool_use") {
+                        continue
                       }
-                      const payload = encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(patched)}\n\n`)
-                      if (!safeEnqueue(payload, `stream_event:${eventType}`)) {
-                        break
-                      }
-                      eventsForwarded += 1
-                      continue
                     }
 
-                    // Forward all other events (message_start, text deltas, content_block_start/stop for text, message_stop)
-                    const payload = encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(event)}\n\n`)
+                    // Normalize agent names in task tool input_json_delta events
+                    let eventToForward = event
+                    if (eventType === "content_block_delta" && eventIndex !== undefined &&
+                        taskBlockIndices.has(eventIndex)) {
+                      const delta = (event as any).delta
+                      if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+                        // Replace capitalized subagent_type values with lowercase
+                        const normalized = delta.partial_json.replace(
+                          /("subagent_type"\s*:\s*")([^"]+)(")/g,
+                          (_: string, pre: string, name: string, post: string) => `${pre}${name.toLowerCase()}${post}`
+                        )
+                        if (normalized !== delta.partial_json) {
+                          eventToForward = {
+                            ...event,
+                            delta: { ...delta, partial_json: normalized }
+                          }
+                        }
+                      }
+                    }
+
+                    // Forward all other events (text, non-MCP tool_use like Task, message events)
+                    const payload = encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(eventToForward)}\n\n`)
                     if (!safeEnqueue(payload, `stream_event:${eventType}`)) {
                       break
                     }
@@ -469,48 +557,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
 
   app.post("/v1/messages", (c) => {
     const requestId = c.req.header("x-request-id") || randomUUID()
-    const queueEnteredAt = Date.now()
-    claudeLog("queue.enter", {
-      requestId,
-      endpoint: "/v1/messages",
-      queueSize: requestQueue.size,
-      queuePending: requestQueue.pending
-    })
-
-    return requestQueue.add(() => {
-      const queueStartedAt = Date.now()
-      claudeLog("queue.start", {
-        requestId,
-        endpoint: "/v1/messages",
-        queueSize: requestQueue.size,
-        queuePending: requestQueue.pending,
-        queueWaitMs: queueStartedAt - queueEnteredAt
-      })
-      return handleMessages(c, { requestId, endpoint: "/v1/messages", queueEnteredAt, queueStartedAt })
-    })
+    const startedAt = Date.now()
+    claudeLog("request.enter", { requestId, endpoint: "/v1/messages" })
+    return handleMessages(c, { requestId, endpoint: "/v1/messages", queueEnteredAt: startedAt, queueStartedAt: startedAt })
   })
 
   app.post("/messages", (c) => {
     const requestId = c.req.header("x-request-id") || randomUUID()
-    const queueEnteredAt = Date.now()
-    claudeLog("queue.enter", {
-      requestId,
-      endpoint: "/messages",
-      queueSize: requestQueue.size,
-      queuePending: requestQueue.pending
-    })
-
-    return requestQueue.add(() => {
-      const queueStartedAt = Date.now()
-      claudeLog("queue.start", {
-        requestId,
-        endpoint: "/messages",
-        queueSize: requestQueue.size,
-        queuePending: requestQueue.pending,
-        queueWaitMs: queueStartedAt - queueEnteredAt
-      })
-      return handleMessages(c, { requestId, endpoint: "/messages", queueEnteredAt, queueStartedAt })
-    })
+    const startedAt = Date.now()
+    claudeLog("request.enter", { requestId, endpoint: "/messages" })
+    return handleMessages(c, { requestId, endpoint: "/messages", queueEnteredAt: startedAt, queueStartedAt: startedAt })
   })
 
   return { app, config: finalConfig }
