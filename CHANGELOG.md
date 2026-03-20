@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.4.0...v1.5.0) (2026-03-20)
+
+
+### Features
+
+* clear error messages for auth failures and SDK crashes ([4e21e9a](https://github.com/rynfar/opencode-claude-max-proxy/commit/4e21e9a735a90620806253e6db410b36895708b4))
+* concurrency control, auto-restart supervisor, error handling ([318ca75](https://github.com/rynfar/opencode-claude-max-proxy/commit/318ca751e3d1c6af1d7c29a86744da959b47e386))
+* error classification, health endpoint, and startup auth check ([43a80f1](https://github.com/rynfar/opencode-claude-max-proxy/commit/43a80f1754499830e1e85adbd82eb65bb0212b42))
+* passthrough mode for multi-model agent delegation ([4836a48](https://github.com/rynfar/opencode-claude-max-proxy/commit/4836a48889a110050e5ffdbc6fabf4a547e30c95))
+* passthrough mode for multi-model agent delegation ([a74ced9](https://github.com/rynfar/opencode-claude-max-proxy/commit/a74ced9350be19a9916c13a944540135d9c4eabb)), closes [#21](https://github.com/rynfar/opencode-claude-max-proxy/issues/21)
+* validate passthrough architecture concept ([deed3db](https://github.com/rynfar/opencode-claude-max-proxy/commit/deed3dbf1b3bfc42f80a0983e6ea5094e09ae2d6))
+
 ## [1.4.0](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.3.0...v1.4.0) (2026-03-20)
 
 
