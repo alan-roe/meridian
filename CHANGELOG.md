@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.2](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.13.1...v1.13.2) (2026-03-23)
+
+
+### Bug Fixes
+
+* remove mock.module leak that breaks session store tests ([576bbe2](https://github.com/rynfar/opencode-claude-max-proxy/commit/576bbe2326aa6f6b7bc53764029940218e1d8b17))
+
 ## [1.13.1](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.13.0...v1.13.1) (2026-03-23)
 
 
