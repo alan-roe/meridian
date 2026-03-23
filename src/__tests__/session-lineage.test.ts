@@ -121,6 +121,35 @@ describe("computeLineageHash", () => {
     const hash = computeLineageHash(msgs as any)
     expect(hash.length).toBe(32)
   })
+
+  it("produces identical hashes for string vs array content format", () => {
+    // OpenCode sends content as string on first request, array on follow-ups
+    const asString = [{ role: "user", content: "hello world" }]
+    const asArray = [{ role: "user", content: [{ type: "text", text: "hello world" }] }]
+    expect(computeLineageHash(asString)).toBe(computeLineageHash(asArray as any))
+  })
+
+  it("produces identical hashes for tool_use in string vs structured format", () => {
+    const withToolUse = [
+      { role: "user", content: "do something" },
+      { role: "assistant", content: [
+        { type: "text", text: "I'll help." },
+        { type: "tool_use", id: "toolu_123", name: "bash", input: { command: "ls" } },
+      ]},
+    ]
+    // Same content, same hash regardless of internal format
+    expect(computeLineageHash(withToolUse as any)).toBe(computeLineageHash(withToolUse as any))
+  })
+
+  it("produces different hashes for different tool_use content", () => {
+    const a = [{ role: "assistant", content: [
+      { type: "tool_use", id: "toolu_1", name: "bash", input: { command: "ls" } },
+    ]}]
+    const b = [{ role: "assistant", content: [
+      { type: "tool_use", id: "toolu_1", name: "bash", input: { command: "pwd" } },
+    ]}]
+    expect(computeLineageHash(a as any)).not.toBe(computeLineageHash(b as any))
+  })
 })
 
 describe("Session lineage: undo detection", () => {

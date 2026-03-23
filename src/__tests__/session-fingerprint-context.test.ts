@@ -1,13 +1,20 @@
 /**
- * Tests for fingerprint-based session resume with system context.
+ * Tests for fingerprint-based session resume.
  *
- * Validates that:
- * 1. Fingerprint resume works when systemContext matches (store and lookup agree)
- * 2. Different systemContext produces different fingerprints (cross-project isolation)
- * 3. Fingerprint resume works end-to-end through the proxy (streaming + non-streaming)
+ * The fingerprint hashes the first user message only (not systemContext).
+ * OpenCode's system prompt contains dynamic content (file trees, diagnostics)
+ * that changes every request, making systemContext-based hashing unstable.
  *
- * These tests prevent regressions like #94 where storeSession and lookupSession
- * computed fingerprints with different inputs, breaking resume entirely.
+ * Cross-project safety is handled by lineage verification — different
+ * projects will have different message content after turn 1, so the
+ * lineage hash will mismatch and prevent incorrect resume.
+ *
+ * These tests cover:
+ * - Resume works even when systemContext changes between requests
+ * - Resume works across stream and non-stream
+ * - Lineage catches cross-project collisions (same first message, different history)
+ * - Different first messages produce different fingerprints
+ * - Backward compat without systemContext
  */
 
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test"
@@ -86,7 +93,6 @@ async function postNoSession(
   }))
 
   if (stream) {
-    // Consume the stream fully
     const reader = response.body?.getReader()
     if (reader) {
       while (true) {
@@ -107,90 +113,220 @@ beforeEach(() => {
   clearSharedSessions()
 })
 
-describe("Fingerprint resume with system context", () => {
-  it("resumes via fingerprint when system context matches (non-stream)", async () => {
+describe("Fingerprint resume: stable across dynamic systemContext", () => {
+  it("resumes when systemContext changes between requests (non-stream)", async () => {
     const app = createTestApp()
-    const system = "You are a helpful assistant. Project: /home/user/my-project"
 
-    // Turn 1 — no session header, fingerprint created with systemContext
+    // Turn 1 — system prompt v1
     await postNoSession(app, [
       { role: "user", content: "hello" },
-    ], "sdk-1", system)
+    ], "sdk-1", "System v1: file tree has 10 files")
 
-    // Turn 2 — same first message + same system → fingerprint matches → should resume
+    // Turn 2 — system prompt changed (dynamic content), same first user message
     capturedQueryParams = null
     await postNoSession(app, [
       { role: "user", content: "hello" },
       { role: "assistant", content: "hi" },
       { role: "user", content: "how are you?" },
-    ], "sdk-1", system)
+    ], "sdk-1", "System v2: file tree has 15 files, 3 diagnostics")
 
+    // MUST resume — fingerprint doesn't include systemContext
     expect(capturedQueryParams?.options?.resume).toBe("sdk-1")
   })
 
-  it("resumes via fingerprint when system context matches (stream)", async () => {
+  it("resumes when systemContext changes between requests (stream)", async () => {
     const app = createTestApp()
-    const system = "You are a coding assistant."
 
-    // Turn 1 — streaming, no session header
     await postNoSession(app, [
       { role: "user", content: "hello" },
-    ], "sdk-stream-1", system, true)
+    ], "sdk-stream-1", "System v1", true)
 
-    // Turn 2 — same system context → should resume
     capturedQueryParams = null
     await postNoSession(app, [
       { role: "user", content: "hello" },
       { role: "assistant", content: "hi" },
       { role: "user", content: "what can you do?" },
-    ], "sdk-stream-1", system, true)
+    ], "sdk-stream-1", "System v2 with more context", true)
 
     expect(capturedQueryParams?.options?.resume).toBe("sdk-stream-1")
   })
 
-  it("does NOT resume when system context differs (cross-project isolation)", async () => {
+  it("resumes when systemContext is added where there was none", async () => {
     const app = createTestApp()
 
-    // Project A
     await postNoSession(app, [
       { role: "user", content: "hello" },
-    ], "sdk-project-a", "Project: /home/user/project-a")
+    ], "sdk-no-ctx")
 
-    // Project B — same first message but different system context
-    capturedQueryParams = null
-    await postNoSession(app, [
-      { role: "user", content: "hello" },
-      { role: "assistant", content: "hi" },
-      { role: "user", content: "list files" },
-    ], "sdk-project-b", "Project: /home/user/project-b")
-
-    // Should NOT resume project A's session
-    expect(capturedQueryParams?.options?.resume).toBeUndefined()
-  })
-
-  it("does NOT resume when system context is added where there was none", async () => {
-    const app = createTestApp()
-
-    // First request with no system context
-    await postNoSession(app, [
-      { role: "user", content: "hello" },
-    ], "sdk-no-system")
-
-    // Second request adds system context — fingerprint should differ
     capturedQueryParams = null
     await postNoSession(app, [
       { role: "user", content: "hello" },
       { role: "assistant", content: "hi" },
       { role: "user", content: "help me" },
-    ], "sdk-with-system", "You are a helpful assistant.")
+    ], "sdk-no-ctx", "You are a helpful assistant.")
 
+    // MUST resume — systemContext not in fingerprint
+    expect(capturedQueryParams?.options?.resume).toBe("sdk-no-ctx")
+  })
+
+  it("resumes when systemContext is removed", async () => {
+    const app = createTestApp()
+
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+    ], "sdk-ctx", "You are a helpful assistant.")
+
+    capturedQueryParams = null
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+      { role: "user", content: "thanks" },
+    ], "sdk-ctx")
+
+    expect(capturedQueryParams?.options?.resume).toBe("sdk-ctx")
+  })
+})
+
+describe("Fingerprint resume: cross-project safety via lineage", () => {
+  it("does NOT resume wrong project when first message matches but history diverges", async () => {
+    const app = createTestApp()
+
+    // Project A: "hello" → assistant responds → user asks about project A files
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+    ], "sdk-project-a")
+
+    // Simulate project A continuing
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi, how can I help with project A?" },
+      { role: "user", content: "list the project A files" },
+    ], "sdk-project-a")
+
+    // Project B: same "hello" start, but different assistant response (different project)
+    // Lineage hash will mismatch because messages[1] differs
+    capturedQueryParams = null
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi, how can I help with project B?" },
+      { role: "user", content: "list the project B files" },
+    ], "sdk-project-b")
+
+    // Should NOT resume project A — lineage diverged at message[1]
     expect(capturedQueryParams?.options?.resume).toBeUndefined()
   })
 
-  it("resumes correctly without system context (backward compat)", async () => {
+  it("resumes correctly after cross-project rejection creates new session", async () => {
     const app = createTestApp()
 
-    // No system context at all — old behavior should still work
+    // Project A
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+    ], "sdk-project-a")
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "project A response" },
+      { role: "user", content: "continue A" },
+    ], "sdk-project-a")
+
+    // Project B — different history, creates fresh session
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "project B response" },
+      { role: "user", content: "continue B" },
+    ], "sdk-project-b")
+
+    // Project B continues — should resume sdk-project-b
+    capturedQueryParams = null
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "project B response" },
+      { role: "user", content: "continue B" },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "more B work" },
+    ], "sdk-project-b")
+
+    expect(capturedQueryParams?.options?.resume).toBe("sdk-project-b")
+  })
+})
+
+describe("Fingerprint resume: different first messages", () => {
+  it("does NOT resume when first user message differs", async () => {
+    const app = createTestApp()
+
+    await postNoSession(app, [
+      { role: "user", content: "hello" },
+    ], "sdk-hello")
+
+    capturedQueryParams = null
+    await postNoSession(app, [
+      { role: "user", content: "goodbye" },
+      { role: "assistant", content: "bye" },
+      { role: "user", content: "wait" },
+    ], "sdk-goodbye")
+
+    expect(capturedQueryParams?.options?.resume).toBeUndefined()
+  })
+})
+
+describe("Fingerprint resume: multi-turn with tool_use blocks", () => {
+  it("resumes correctly when history contains tool_use and tool_result", async () => {
+    const app = createTestApp()
+
+    // Turn 1
+    await postNoSession(app, [
+      { role: "user", content: "create a file" },
+    ], "sdk-tools", "System prompt v1")
+
+    // Turn 2 — history has tool_use/tool_result (this is what OpenCode sends)
+    capturedQueryParams = null
+    await postNoSession(app, [
+      { role: "user", content: "create a file" },
+      { role: "assistant", content: [
+        { type: "text", text: "I'll create that file." },
+        { type: "tool_use", id: "toolu_123", name: "write", input: { path: "test.txt", content: "hello" } },
+      ] as any },
+      { role: "user", content: [
+        { type: "tool_result", tool_use_id: "toolu_123", content: "File written." },
+      ] as any },
+      { role: "assistant", content: "Done! File created." },
+      { role: "user", content: "now read it back" },
+    ], "sdk-tools", "System prompt v2 with updated file tree")
+
+    // MUST resume even though system changed and history has tool blocks
+    expect(capturedQueryParams?.options?.resume).toBe("sdk-tools")
+  })
+
+  it("does NOT resume after undo even with tool_use in history", async () => {
+    const app = createTestApp()
+
+    await postNoSession(app, [
+      { role: "user", content: "create a file" },
+    ], "sdk-tools-undo")
+
+    await postNoSession(app, [
+      { role: "user", content: "create a file" },
+      { role: "assistant", content: "I'll create that file." },
+      { role: "user", content: "use bash to list files" },
+    ], "sdk-tools-undo")
+
+    // /undo — different message 3
+    capturedQueryParams = null
+    await postNoSession(app, [
+      { role: "user", content: "create a file" },
+      { role: "assistant", content: "I'll create that file." },
+      { role: "user", content: "actually, delete that file instead" },
+    ], "sdk-tools-undo-new")
+
+    // Should NOT resume — lineage diverged
+    expect(capturedQueryParams?.options?.resume).toBeUndefined()
+  })
+})
+
+describe("Fingerprint resume: backward compat", () => {
+  it("resumes correctly without systemContext", async () => {
+    const app = createTestApp()
+
     await postNoSession(app, [
       { role: "user", content: "hello" },
     ], "sdk-no-ctx")

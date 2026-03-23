@@ -108,10 +108,13 @@ export function clearSessionCache() {
 // uses count-based pruning. SDK sessions persist on Anthropic's side for
 // weeks — we should never discard a valid mapping before the SDK does.
 
-/** Hash the first user message + system context to fingerprint a conversation.
- *  Including system context prevents cross-project collisions when different
- *  projects happen to start with the same first message. */
-function getConversationFingerprint(messages: Array<{ role: string; content: any }>, systemContext?: string): string {
+/** Hash the first user message + working directory to fingerprint a conversation.
+ *  Used to find a cached session when no x-opencode-session header is present.
+ *  Includes workingDirectory (stable per project, unlike systemContext which
+ *  contains dynamic file trees/diagnostics that change every request).
+ *  This prevents cross-project collisions when different projects start
+ *  with the same first message. */
+function getConversationFingerprint(messages: Array<{ role: string; content: any }>, workingDirectory?: string): string {
   const firstUser = messages?.find((m) => m.role === "user")
   if (!firstUser) return ""
   const text = typeof firstUser.content === "string"
@@ -120,8 +123,26 @@ function getConversationFingerprint(messages: Array<{ role: string; content: any
       ? firstUser.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("")
       : ""
   if (!text) return ""
-  const seed = systemContext ? `${systemContext}\n${text.slice(0, 2000)}` : text.slice(0, 2000)
+  const seed = workingDirectory ? `${workingDirectory}\n${text.slice(0, 2000)}` : text.slice(0, 2000)
   return createHash("sha256").update(seed).digest("hex").slice(0, 16)
+}
+
+/**
+ * Normalize message content to a stable string representation.
+ * OpenCode sends content as a string on the first request but as an array
+ * of content blocks on follow-up requests. Both must hash identically.
+ */
+function normalizeContent(content: any): string {
+  if (typeof content === "string") return content
+  if (Array.isArray(content)) {
+    return content.map((block: any) => {
+      if (block.type === "text" && block.text) return block.text
+      if (block.type === "tool_use") return `tool_use:${block.id}:${block.name}:${JSON.stringify(block.input)}`
+      if (block.type === "tool_result") return `tool_result:${block.tool_use_id}:${typeof block.content === "string" ? block.content : JSON.stringify(block.content)}`
+      return JSON.stringify(block)
+    }).join("\n")
+  }
+  return String(content)
 }
 
 /**
@@ -131,12 +152,7 @@ function getConversationFingerprint(messages: Array<{ role: string; content: any
  */
 export function computeLineageHash(messages: Array<{ role: string; content: any }>): string {
   if (!messages || messages.length === 0) return ""
-  const parts = messages.map(m => {
-    const text = typeof m.content === "string"
-      ? m.content
-      : JSON.stringify(m.content)
-    return `${m.role}:${text}`
-  })
+  const parts = messages.map(m => `${m.role}:${normalizeContent(m.content)}`)
   return createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 32)
 }
 
@@ -181,7 +197,7 @@ function touchSession(state: SessionState): SessionState {
 function lookupSession(
   opencodeSessionId: string | undefined,
   messages: Array<{ role: string; content: any }>,
-  systemContext?: string
+  workingDirectory?: string
 ): SessionState | undefined {
   if (opencodeSessionId) {
     const cached = sessionCache.get(opencodeSessionId)
@@ -204,7 +220,7 @@ function lookupSession(
     return undefined
   }
 
-  const fp = getConversationFingerprint(messages, systemContext)
+  const fp = getConversationFingerprint(messages, workingDirectory)
   if (fp) {
     const cached = fingerprintCache.get(fp)
     if (cached) {
@@ -232,7 +248,7 @@ function storeSession(
   opencodeSessionId: string | undefined,
   messages: Array<{ role: string; content: any }>,
   claudeSessionId: string,
-  systemContext?: string
+  workingDirectory?: string
 ) {
   if (!claudeSessionId) return
   const lineageHash = computeLineageHash(messages)
@@ -244,7 +260,7 @@ function storeSession(
   }
   // In-memory cache
   if (opencodeSessionId) sessionCache.set(opencodeSessionId, state)
-  const fp = getConversationFingerprint(messages, systemContext)
+  const fp = getConversationFingerprint(messages, workingDirectory)
   if (fp) fingerprintCache.set(fp, state)
   // Shared file store (cross-proxy resume)
   const key = opencodeSessionId || fp
@@ -539,7 +555,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
         // Session resume: look up cached Claude SDK session
         const opencodeSessionId = c.req.header("x-opencode-session")
-        const cachedSession = lookupSession(opencodeSessionId, body.messages || [], systemContext)
+        const cachedSession = lookupSession(opencodeSessionId, body.messages || [], workingDirectory)
         const resumeSessionId = cachedSession?.claudeSessionId
         const isResume = Boolean(resumeSessionId)
 
@@ -776,9 +792,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               claudeExecutable = await resolveClaudeExecutableAsync()
             }
 
+            const abortController = new AbortController()
             const response = query({
               prompt,
               options: {
+                abortController,
                 maxTurns: passthrough ? 1 : 100,
                 cwd: workingDirectory,
                 model,
@@ -812,9 +830,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             })
 
             for await (const message of response) {
-              // Capture session ID from SDK messages
+              // Capture session ID from SDK messages.
+              // Store eagerly so session is preserved even on interruption.
               if ((message as any).session_id) {
-                currentSessionId = (message as any).session_id
+                const newSessionId = (message as any).session_id
+                if (newSessionId !== currentSessionId) {
+                  currentSessionId = newSessionId
+                  storeSession(opencodeSessionId, body.messages || [], currentSessionId, workingDirectory)
+                }
               }
               if (message.type === "assistant") {
                 assistantMessages += 1
@@ -915,7 +938,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
           // Store session for future resume
               if (currentSessionId) {
-                storeSession(opencodeSessionId, body.messages || [], currentSessionId, systemContext)
+                storeSession(opencodeSessionId, body.messages || [], currentSessionId, workingDirectory)
               }
 
               const responseSessionId = currentSessionId || resumeSessionId || `session_${Date.now()}`
@@ -937,6 +960,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         }
 
         const encoder = new TextEncoder()
+        let streamClosed = false
+        let currentSessionId: string | undefined
+
         const readable = new ReadableStream({
           async start(controller) {
             const upstreamStartAt = Date.now()
@@ -946,7 +972,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             let eventsForwarded = 0
             let textEventsForwarded = 0
             let bytesSent = 0
-            let streamClosed = false
 
             claudeLog("upstream.start", { mode: "stream", model })
 
@@ -959,6 +984,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               } catch (error) {
                 if (isClosedControllerError(error)) {
                   streamClosed = true
+                  streamAbortController.abort()
                   claudeLog("stream.client_closed", { source, streamEventsSeen, eventsForwarded })
                   return false
                 }
@@ -971,11 +997,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               }
             }
 
+            const streamAbortController = new AbortController()
             try {
-              let currentSessionId: string | undefined
               const response = query({
                 prompt,
                 options: {
+                  abortController: streamAbortController,
                   maxTurns: passthrough ? 1 : 100,
                   cwd: workingDirectory,
                   model,
@@ -1036,12 +1063,19 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               try {
                 for await (const message of response) {
                   if (streamClosed) {
+                    streamAbortController.abort()
                     break
                   }
 
-                  // Capture session ID from any SDK message
+                  // Capture session ID from any SDK message.
+                  // Store eagerly on first capture so the session is preserved
+                  // even if the client disconnects mid-stream.
                   if ((message as any).session_id) {
-                    currentSessionId = (message as any).session_id
+                    const newSessionId = (message as any).session_id
+                    if (newSessionId !== currentSessionId) {
+                      currentSessionId = newSessionId
+                      storeSession(opencodeSessionId, body.messages || [], currentSessionId, workingDirectory)
+                    }
                   }
 
                   if (message.type === "stream_event") {
@@ -1139,7 +1173,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
               // Store session for future resume
               if (currentSessionId) {
-                storeSession(opencodeSessionId, body.messages || [], currentSessionId, systemContext)
+                storeSession(opencodeSessionId, body.messages || [], currentSessionId, workingDirectory)
               }
 
               if (!streamClosed) {
@@ -1247,6 +1281,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             } catch (error) {
               if (isClosedControllerError(error)) {
                 streamClosed = true
+                streamAbortController.abort()
                 claudeLog("stream.client_closed", {
                   source: "stream_catch",
                   streamEventsSeen,
