@@ -9,644 +9,49 @@ import type { ProxyConfig, ProxyInstance, ProxyServer } from "./types"
 export type { ProxyConfig, ProxyInstance, ProxyServer }
 import { claudeLog } from "../logger"
 import { exec as execCallback } from "child_process"
-import { existsSync } from "fs"
-import { fileURLToPath } from "url"
-import { join, dirname } from "path"
 import { promisify } from "util"
-import { createOpencodeMcpServer } from "../mcpTools"
-import { randomUUID, createHash } from "crypto"
+
+import { randomUUID } from "crypto"
 import { withClaudeLogContext } from "../logger"
 import { fuzzyMatchAgentName } from "./agentMatch"
 import { buildAgentDefinitions } from "./agentDefs"
 import { createPassthroughMcpServer, stripMcpPrefix, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX } from "./passthroughTools"
-import { lookupSharedSession, storeSharedSession, clearSharedSessions } from "./sessionStore"
-import { LRUMap } from "../utils/lruMap"
+
 import { telemetryStore, diagnosticLog, createTelemetryRoutes } from "../telemetry"
 import type { RequestMetric } from "../telemetry"
+import { classifyError } from "./errors"
+import { mapModelToClaudeModel, resolveClaudeExecutableAsync, isClosedControllerError } from "./models"
+import { ALLOWED_MCP_TOOLS } from "./tools"
+import { getLastUserMessage } from "./messages"
+import { openCodeAdapter } from "./adapters/opencode"
+import { buildQueryOptions, type QueryContext } from "./query"
+import {
+  computeLineageHash,
+  hashMessage,
+  computeMessageHashes,
+  type LineageResult,
+} from "./session/lineage"
+// Re-export for backwards compatibility (existing tests import from here)
 
-// --- Session Tracking ---
-// Maps OpenCode session ID (or fingerprint) → Claude SDK session ID
-/** Minimum suffix overlap (stored messages found at the end of incoming)
- *  required to classify a mutation as compaction rather than a branch. */
-const MIN_SUFFIX_FOR_COMPACTION = 2
+import { lookupSession, storeSession, clearSessionCache, getMaxSessionsLimit } from "./session/cache"
+// Re-export for backwards compatibility (existing tests import from here)
+export { computeLineageHash, hashMessage, computeMessageHashes }
+export { clearSessionCache, getMaxSessionsLimit }
+export type { LineageResult }
 
-interface SessionState {
-  claudeSessionId: string
-  lastAccess: number
-  messageCount: number
-  /** Hash of messages[0..messageCount-1] for fast-path lineage verification.
-   *  When the full prefix matches, the conversation is a strict continuation
-   *  and we skip the per-message diff entirely. */
-  lineageHash: string
-  /** Per-message content hashes from the last stored request.
-   *  Used for precise diff-based mutation classification when the aggregate
-   *  lineageHash mismatches.  By comparing which stored hashes survive in the
-   *  incoming messages we can deterministically distinguish:
-   *    - Compaction  (beginning changed, end preserved → suffix overlap)
-   *    - Undo/branch (beginning preserved, end changed  → prefix-only overlap)
-   *    - Pruning     (middle changed, both ends preserved)  */
-  messageHashes?: string[]
-  /** SDK assistant message UUIDs indexed by message position.
-   *  Only assistant messages have UUIDs (user messages are null).
-   *  Used to find the rollback point for undo: the last matching
-   *  assistant message UUID becomes the `resumeSessionAt` target. */
-  sdkMessageUuids?: Array<string | null>
-}
 
-const DEFAULT_MAX_SESSIONS = 1000
 
-export function getMaxSessionsLimit(): number {
-  const raw = process.env.CLAUDE_PROXY_MAX_SESSIONS
-  if (!raw) return DEFAULT_MAX_SESSIONS
 
-  const parsed = Number.parseInt(raw, 10)
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    console.warn(`[PROXY] Invalid CLAUDE_PROXY_MAX_SESSIONS value "${raw}"; using default ${DEFAULT_MAX_SESSIONS}`)
-    return DEFAULT_MAX_SESSIONS
-  }
 
-  return parsed
-}
 
-function removeFingerprintEntriesByClaudeSessionId(claudeSessionId: string): void {
-  for (const [key, state] of fingerprintCache.entries()) {
-    if (state.claudeSessionId === claudeSessionId) {
-      fingerprintCache.delete(key)
-    }
-  }
-}
 
-function removeSessionEntriesByClaudeSessionId(claudeSessionId: string): void {
-  for (const [key, state] of sessionCache.entries()) {
-    if (state.claudeSessionId === claudeSessionId) {
-      sessionCache.delete(key)
-    }
-  }
-}
 
-function createSessionCache(maxSize: number) {
-  return new LRUMap<string, SessionState>(maxSize, (_key, evictedState) => {
-    removeFingerprintEntriesByClaudeSessionId(evictedState.claudeSessionId)
-  })
-}
 
-function createFingerprintCache(maxSize: number) {
-  return new LRUMap<string, SessionState>(maxSize, (_key, evictedState) => {
-    removeSessionEntriesByClaudeSessionId(evictedState.claudeSessionId)
-  })
-}
 
-// Read limit once at module load — no hot-reload in createProxyServer to avoid
-// silently dropping all sessions mid-operation. clearSessionCache() re-reads the
-// env var so tests can override the limit.
-let activeMaxSessions = getMaxSessionsLimit()
-let sessionCache = createSessionCache(activeMaxSessions)
-let fingerprintCache = createFingerprintCache(activeMaxSessions)
-
-/** Clear all session caches (used in tests).
- *  Re-reads CLAUDE_PROXY_MAX_SESSIONS so tests can override the limit. */
-export function clearSessionCache() {
-  const configuredLimit = getMaxSessionsLimit()
-  if (configuredLimit !== activeMaxSessions) {
-    activeMaxSessions = configuredLimit
-    sessionCache = createSessionCache(activeMaxSessions)
-    fingerprintCache = createFingerprintCache(activeMaxSessions)
-  } else {
-    sessionCache.clear()
-    fingerprintCache.clear()
-  }
-  // Also clear shared file store
-  try { clearSharedSessions() } catch {}
-}
-
-// No time-based session eviction. The in-memory LRU caches (bounded by
-// MAX_SESSIONS) handle memory pressure. The file store (sessionStore.ts)
-// uses count-based pruning. SDK sessions persist on Anthropic's side for
-// weeks — we should never discard a valid mapping before the SDK does.
-
-/**
- * Extract the client's working directory from the system prompt.
- * OpenCode embeds it inside an <env> block:
- *   <env>
- *     Working directory: /path/to/project
- *     ...
- *   </env>
- *
- * Returns the path if found, or undefined to fall back to server defaults.
- */
-function extractClientCwd(body: any): string | undefined {
-  let systemText = ""
-  if (typeof body.system === "string") {
-    systemText = body.system
-  } else if (Array.isArray(body.system)) {
-    systemText = body.system
-      .filter((b: any) => b.type === "text" && b.text)
-      .map((b: any) => b.text)
-      .join("\n")
-  }
-  if (!systemText) return undefined
-
-  const match = systemText.match(/<env>\s*[\s\S]*?Working directory:\s*([^\n<]+)/i)
-  return match?.[1]?.trim() || undefined
-}
-
-/** Hash the first user message + working directory to fingerprint a conversation.
- *  Used to find a cached session when no x-opencode-session header is present.
- *  Includes workingDirectory (stable per project, unlike systemContext which
- *  contains dynamic file trees/diagnostics that change every request).
- *  This prevents cross-project collisions when different projects start
- *  with the same first message. */
-function getConversationFingerprint(messages: Array<{ role: string; content: any }>, workingDirectory?: string): string {
-  const firstUser = messages?.find((m) => m.role === "user")
-  if (!firstUser) return ""
-  const text = typeof firstUser.content === "string"
-    ? firstUser.content
-    : Array.isArray(firstUser.content)
-      ? firstUser.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("")
-      : ""
-  if (!text) return ""
-  const seed = workingDirectory ? `${workingDirectory}\n${text.slice(0, 2000)}` : text.slice(0, 2000)
-  return createHash("sha256").update(seed).digest("hex").slice(0, 16)
-}
-
-/**
- * Normalize message content to a stable string representation.
- * OpenCode sends content as a string on the first request but as an array
- * of content blocks on follow-up requests. Both must hash identically.
- */
-function normalizeContent(content: any): string {
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    return content.map((block: any) => {
-      if (block.type === "text" && block.text) return block.text
-      if (block.type === "tool_use") return `tool_use:${block.id}:${block.name}:${JSON.stringify(block.input)}`
-      if (block.type === "tool_result") return `tool_result:${block.tool_use_id}:${typeof block.content === "string" ? block.content : JSON.stringify(block.content)}`
-      return JSON.stringify(block)
-    }).join("\n")
-  }
-  return String(content)
-}
-
-/**
- * Compute a lineage hash of an ordered message array.
- * Used as a fast-path check: if the aggregate hash matches, the messages
- * are an exact prefix-extension and we skip the per-message diff.
- */
-export function computeLineageHash(messages: Array<{ role: string; content: any }>): string {
-  if (!messages || messages.length === 0) return ""
-  const parts = messages.map(m => `${m.role}:${normalizeContent(m.content)}`)
-  return createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 32)
-}
-
-/**
- * Compute a content hash for a single message (role + normalised content).
- * Used to build per-message hash arrays for precise diff-based verification.
- */
-export function hashMessage(message: { role: string; content: any }): string {
-  return createHash("sha256")
-    .update(`${message.role}:${normalizeContent(message.content)}`)
-    .digest("hex")
-    .slice(0, 32)
-}
-
-/**
- * Compute per-message hashes for an entire message array.
- */
-export function computeMessageHashes(messages: Array<{ role: string; content: any }>): string[] {
-  if (!messages || messages.length === 0) return []
-  return messages.map(hashMessage)
-}
-
-/**
- * Measure how many stored hashes match from the START of the stored array
- * against the incoming hashes (order-preserving).
- *
- * Prefix overlap means the beginning of the conversation is intact (undo
- * changes the end but preserves the beginning).
- */
-function measurePrefixOverlap(storedHashes: string[], incomingSet: Set<string>): number {
-  let overlap = 0
-  for (const h of storedHashes) {
-    if (incomingSet.has(h)) overlap++
-    else break
-  }
-  return overlap
-}
-
-/**
- * Measure how many stored hashes match from the END of the stored array
- * against the incoming hashes (order-preserving).
- *
- * Suffix overlap means the recent conversation is intact (compaction
- * changes the beginning but preserves the end).
- */
-function measureSuffixOverlap(storedHashes: string[], incomingSet: Set<string>): number {
-  let overlap = 0
-  for (let i = storedHashes.length - 1; i >= 0; i--) {
-    if (incomingSet.has(storedHashes[i]!)) overlap++
-    else break
-  }
-  return overlap
-}
-
-/**
- * Result of lineage verification — classifies the mutation and provides
- * the information needed to take the correct SDK action.
- */
-export type LineageResult =
-  | { type: "continuation"; session: SessionState }
-  | { type: "compaction";   session: SessionState }
-  | { type: "undo";         session: SessionState; prefixOverlap: number; rollbackUuid: string | undefined }
-  | { type: "diverged" }
-
-/**
- * Verify that incoming messages are a valid continuation of a cached session.
- * Uses per-message hash comparison to deterministically classify mutations.
- *
- * Decision matrix:
- *   Full prefix match (fast-path)          → continuation (resume normally)
- *   Suffix overlap >= MIN_SUFFIX           → compaction   (resume normally)
- *   Prefix overlap > 0, no suffix          → undo         (fork at rollback point)
- *   No overlap                             → diverged     (start fresh)
- */
-function verifyLineage(
-  cached: SessionState,
-  messages: Array<{ role: string; content: any }>,
-  cacheKey: string,
-  cache: typeof sessionCache | typeof fingerprintCache
-): LineageResult {
-  // No stored lineage (legacy entry or first request) — allow resume
-  if (!cached.lineageHash || cached.messageCount === 0) {
-    return { type: "continuation", session: cached }
-  }
-
-  // --- Fast path: aggregate lineage hash ---
-  const prefix = messages.slice(0, cached.messageCount)
-  const prefixHash = computeLineageHash(prefix)
-  if (prefixHash === cached.lineageHash) {
-    return { type: "continuation", session: cached }
-  }
-
-  // --- Slow path: per-message diff ---
-  if (!cached.messageHashes || cached.messageHashes.length === 0) {
-    // No per-message hashes stored (legacy session). Can't diff — reject.
-    cache.delete(cacheKey)
-    return { type: "diverged" }
-  }
-
-  const incomingHashes = computeMessageHashes(messages)
-  const incomingSet = new Set(incomingHashes)
-
-  const prefixOverlap = measurePrefixOverlap(cached.messageHashes, incomingSet)
-  const suffixOverlap = measureSuffixOverlap(cached.messageHashes, incomingSet)
-
-  // Compaction: suffix preserved, long enough conversation
-  const MIN_STORED_FOR_COMPACTION = 6
-  if (
-    suffixOverlap >= MIN_SUFFIX_FOR_COMPACTION &&
-    cached.messageHashes.length >= MIN_STORED_FOR_COMPACTION
-  ) {
-    const compactionMsg = `Compaction detected (key=${cacheKey.slice(0, 8)}…): suffix overlap ${suffixOverlap}/${cached.messageHashes.length}. Allowing resume.`
-    console.error(`[PROXY] ${compactionMsg}`)
-    diagnosticLog.lineage(compactionMsg)
-    cached.lineageHash = computeLineageHash(messages)
-    cached.messageHashes = incomingHashes
-    cached.messageCount = messages.length
-    return { type: "compaction", session: cached }
-  }
-
-  // Undo: prefix preserved (beginning intact) but suffix changed
-  if (prefixOverlap > 0 && suffixOverlap === 0) {
-    // Find the SDK UUID at the last matching position.
-    // The last matching stored message is at index (prefixOverlap - 1).
-    // We need the most recent ASSISTANT UUID at or before that position.
-    let rollbackUuid: string | undefined
-    if (cached.sdkMessageUuids) {
-      for (let i = prefixOverlap - 1; i >= 0; i--) {
-        if (cached.sdkMessageUuids[i]) {
-          rollbackUuid = cached.sdkMessageUuids[i]!
-          break
-        }
-      }
-    }
-    const undoMsg = `Undo detected (key=${cacheKey.slice(0, 8)}…): prefix overlap ${prefixOverlap}/${cached.messageHashes.length}, rollback UUID: ${rollbackUuid || "none (legacy session)"}.`
-    console.error(`[PROXY] ${undoMsg}`)
-    diagnosticLog.lineage(undoMsg)
-    // Don't delete the cache entry — we keep the original session for reference.
-    // The caller will fork it.
-    return { type: "undo", session: cached, prefixOverlap, rollbackUuid }
-  }
-
-  // No meaningful overlap — completely different conversation.
-  cache.delete(cacheKey)
-  return { type: "diverged" }
-}
-
-/** Refresh lastAccess on a verified session so LRU eviction reflects actual usage */
-function touchSession(state: SessionState): SessionState {
-  state.lastAccess = Date.now()
-  return state
-}
-
-/** Look up a cached session by header or fingerprint.
- *  Returns a LineageResult that classifies the mutation and includes the
- *  session state needed for the correct SDK action. */
-function lookupSession(
-  opencodeSessionId: string | undefined,
-  messages: Array<{ role: string; content: any }>,
-  workingDirectory?: string
-): LineageResult {
-  if (opencodeSessionId) {
-    const cached = sessionCache.get(opencodeSessionId)
-    if (cached) {
-      const result = verifyLineage(cached, messages, opencodeSessionId, sessionCache)
-      if (result.type === "continuation" || result.type === "compaction") touchSession(result.session)
-      return result
-    }
-    const shared = lookupSharedSession(opencodeSessionId)
-    if (shared) {
-      const state: SessionState = {
-        claudeSessionId: shared.claudeSessionId,
-        lastAccess: Date.now(),
-        messageCount: shared.messageCount || 0,
-        lineageHash: shared.lineageHash || "",
-        messageHashes: shared.messageHashes,
-        sdkMessageUuids: shared.sdkMessageUuids,
-      }
-      const result = verifyLineage(state, messages, opencodeSessionId, sessionCache)
-      if (result.type === "continuation" || result.type === "compaction") {
-        sessionCache.set(opencodeSessionId, state)
-      }
-      return result
-    }
-    return { type: "diverged" }
-  }
-
-  const fp = getConversationFingerprint(messages, workingDirectory)
-  if (fp) {
-    const cached = fingerprintCache.get(fp)
-    if (cached) {
-      const result = verifyLineage(cached, messages, fp, fingerprintCache)
-      if (result.type === "continuation" || result.type === "compaction") touchSession(result.session)
-      return result
-    }
-    const shared = lookupSharedSession(fp)
-    if (shared) {
-      const state: SessionState = {
-        claudeSessionId: shared.claudeSessionId,
-        lastAccess: Date.now(),
-        messageCount: shared.messageCount || 0,
-        lineageHash: shared.lineageHash || "",
-        messageHashes: shared.messageHashes,
-        sdkMessageUuids: shared.sdkMessageUuids,
-      }
-      const result = verifyLineage(state, messages, fp, fingerprintCache)
-      if (result.type === "continuation" || result.type === "compaction") {
-        fingerprintCache.set(fp, state)
-      }
-      return result
-    }
-  }
-  return { type: "diverged" }
-}
-
-/** Store a session mapping with lineage hash and SDK UUIDs for divergence detection.
- *  @param sdkMessageUuids — per-message SDK assistant UUIDs (null for user messages).
- *    If provided, merged with any previously stored UUIDs to build a complete map. */
-function storeSession(
-  opencodeSessionId: string | undefined,
-  messages: Array<{ role: string; content: any }>,
-  claudeSessionId: string,
-  workingDirectory?: string,
-  sdkMessageUuids?: Array<string | null>
-) {
-  if (!claudeSessionId) return
-  const lineageHash = computeLineageHash(messages)
-  const messageHashes = computeMessageHashes(messages)
-  const state: SessionState = {
-    claudeSessionId,
-    lastAccess: Date.now(),
-    messageCount: messages?.length || 0,
-    lineageHash,
-    messageHashes,
-    sdkMessageUuids,
-  }
-  // In-memory cache
-  if (opencodeSessionId) sessionCache.set(opencodeSessionId, state)
-  const fp = getConversationFingerprint(messages, workingDirectory)
-  if (fp) fingerprintCache.set(fp, state)
-  // Shared file store (cross-proxy resume)
-  const key = opencodeSessionId || fp
-  if (key) storeSharedSession(key, claudeSessionId, state.messageCount, lineageHash, messageHashes, sdkMessageUuids)
-}
-
-/** Extract only the last user message (for resume — SDK already has history) */
-function getLastUserMessage(messages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === "user") return [messages[i]!]
-  }
-  return messages.slice(-1)
-}
-
-// --- Error Classification ---
-// Detect specific SDK errors and return helpful messages to the client
-function classifyError(errMsg: string): { status: number; type: string; message: string } {
-  const lower = errMsg.toLowerCase()
-
-  // Authentication failures
-  if (lower.includes("401") || lower.includes("authentication") || lower.includes("invalid auth") || lower.includes("credentials")) {
-    return {
-      status: 401,
-      type: "authentication_error",
-      message: "Claude authentication expired or invalid. Run 'claude login' in your terminal to re-authenticate, then restart the proxy."
-    }
-  }
-
-  // Rate limiting
-  if (lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests")) {
-    return {
-      status: 429,
-      type: "rate_limit_error",
-      message: "Claude Max rate limit reached. Wait a moment and try again."
-    }
-  }
-
-  // Billing / subscription
-  if (lower.includes("402") || lower.includes("billing") || lower.includes("subscription") || lower.includes("payment")) {
-    return {
-      status: 402,
-      type: "billing_error",
-      message: "Claude Max subscription issue. Check your subscription status at https://claude.ai/settings/subscription"
-    }
-  }
-
-  // SDK process crash
-  if (lower.includes("exited with code") || lower.includes("process exited")) {
-    const codeMatch = errMsg.match(/exited with code (\d+)/)
-    const code = codeMatch ? codeMatch[1] : "unknown"
-
-    // Code 1 with no other info is usually auth
-    if (code === "1" && !lower.includes("tool") && !lower.includes("mcp")) {
-      return {
-        status: 401,
-        type: "authentication_error",
-        message: "Claude Code process crashed (exit code 1). This usually means authentication expired. Run 'claude login' in your terminal to re-authenticate, then restart the proxy."
-      }
-    }
-
-    return {
-      status: 502,
-      type: "api_error",
-      message: `Claude Code process exited unexpectedly (code ${code}). Check proxy logs for details. If this persists, try 'claude login' to refresh authentication.`
-    }
-  }
-
-  // Timeout
-  if (lower.includes("timeout") || lower.includes("timed out")) {
-    return {
-      status: 504,
-      type: "timeout_error",
-      message: "Request timed out. The operation may have been too complex. Try a simpler request."
-    }
-  }
-
-  // Server errors from Anthropic
-  if (lower.includes("500") || lower.includes("server error") || lower.includes("internal error")) {
-    return {
-      status: 502,
-      type: "api_error",
-      message: "Claude API returned a server error. This is usually temporary — try again in a moment."
-    }
-  }
-
-  // Overloaded
-  if (lower.includes("503") || lower.includes("overloaded")) {
-    return {
-      status: 503,
-      type: "overloaded_error",
-      message: "Claude is temporarily overloaded. Try again in a few seconds."
-    }
-  }
-
-  // Default
-  return {
-    status: 500,
-    type: "api_error",
-    message: errMsg || "Unknown error"
-  }
-}
-
-// Block SDK built-in tools so Claude only uses MCP tools (which have correct param names)
-const BLOCKED_BUILTIN_TOOLS = [
-  "Read", "Write", "Edit", "MultiEdit",
-  "Bash", "Glob", "Grep", "NotebookEdit",
-  "WebFetch", "WebSearch", "TodoWrite"
-]
-
-// Claude Code SDK tools that have NO equivalent in OpenCode.
-// Only block these — everything else either has an OpenCode equivalent
-// or is handled by OpenCode's own tool system.
-//
-// Tools where OpenCode has an equivalent but with a DIFFERENT name/schema
-// are blocked so Claude uses OpenCode's version instead of the SDK's.
-// See schema-incompatible section below.
-//
-// These truly have NO OpenCode equivalent (BLOCKED):
-const CLAUDE_CODE_ONLY_TOOLS = [
-  "ToolSearch",        // Claude Code deferred tool loading (internal mechanism)
-  "CronCreate",        // Claude Code cron jobs
-  "CronDelete",        // Claude Code cron jobs
-  "CronList",          // Claude Code cron jobs
-  "EnterPlanMode",     // Claude Code mode switching (OpenCode uses plan agent instead)
-  "ExitPlanMode",      // Claude Code mode switching
-  "EnterWorktree",     // Claude Code git worktree management
-  "ExitWorktree",      // Claude Code git worktree management
-  "NotebookEdit",      // Jupyter notebook editing
-  // Schema-incompatible: SDK tool name differs from OpenCode's.
-  // If Claude calls the SDK version, OpenCode won't recognize it.
-  // Block the SDK's so Claude only sees OpenCode's definitions.
-  "TodoWrite",         // OpenCode: todowrite (requires 'priority' field)
-  "AskUserQuestion",   // OpenCode: question
-  "Skill",             // OpenCode: skill / skill_mcp / slashcommand
-  "Agent",             // OpenCode: delegate_task / task
-  "TaskOutput",        // OpenCode: background_output
-  "TaskStop",          // OpenCode: background_cancel
-  "WebSearch",         // OpenCode: websearch_web_search_exa
-]
-
-const MCP_SERVER_NAME = "opencode"
-
-const ALLOWED_MCP_TOOLS = [
-  `mcp__${MCP_SERVER_NAME}__read`,
-  `mcp__${MCP_SERVER_NAME}__write`,
-  `mcp__${MCP_SERVER_NAME}__edit`,
-  `mcp__${MCP_SERVER_NAME}__bash`,
-  `mcp__${MCP_SERVER_NAME}__glob`,
-  `mcp__${MCP_SERVER_NAME}__grep`
-]
 
 const exec = promisify(execCallback)
 
-let cachedClaudePath: string | null = null
-let cachedClaudePathPromise: Promise<string> | null = null
 let claudeExecutable = ""
-
-/**
- * Resolve the Claude executable path asynchronously (non-blocking).
- *
- * Uses a three-tier cache:
- * 1. cachedClaudePath — resolved path, returned immediately on subsequent calls
- * 2. cachedClaudePathPromise — deduplicates concurrent calls during resolution
- * 3. Falls through to resolution logic (SDK cli.js → system `which claude`)
- *
- * The promise is cleared in `finally` to allow retry on failure while
- * cachedClaudePath prevents re-resolution on success.
- */
-async function resolveClaudeExecutableAsync(): Promise<string> {
-  if (cachedClaudePath) return cachedClaudePath
-  if (cachedClaudePathPromise) return cachedClaudePathPromise
-
-  cachedClaudePathPromise = (async () => {
-    // 1. Try the SDK's bundled cli.js (same dir as this module's SDK)
-    try {
-      const sdkPath = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk"))
-      const sdkCliJs = join(dirname(sdkPath), "cli.js")
-      if (existsSync(sdkCliJs)) {
-        cachedClaudePath = sdkCliJs
-        return sdkCliJs
-      }
-    } catch {}
-
-    // 2. Try the system-installed claude binary
-    try {
-      const { stdout } = await exec("which claude")
-      const claudePath = stdout.trim()
-      if (claudePath && existsSync(claudePath)) {
-        cachedClaudePath = claudePath
-        return claudePath
-      }
-    } catch {}
-
-    throw new Error("Could not find Claude Code executable. Install via: npm install -g @anthropic-ai/claude-code")
-  })()
-
-  try {
-    return await cachedClaudePathPromise
-  } finally {
-    cachedClaudePathPromise = null
-  }
-}
-
-function mapModelToClaudeModel(model: string): "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]" | "haiku" {
-  if (model.includes("opus")) return "opus[1m]"
-  if (model.includes("haiku")) return "haiku"
-  return "sonnet[1m]"
-}
-
-function isClosedControllerError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  return error.message.includes("Controller is already closed")
-}
 
 export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServer {
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
@@ -701,7 +106,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const body = await c.req.json()
         const model = mapModelToClaudeModel(body.model || "sonnet")
         const stream = body.stream ?? true
-        const workingDirectory = extractClientCwd(body) || process.env.CLAUDE_PROXY_WORKDIR || process.cwd()
+        const adapter = openCodeAdapter
+        const workingDirectory = adapter.extractWorkingDirectory(body) || process.env.CLAUDE_PROXY_WORKDIR || process.cwd()
 
         // Strip env vars that would cause the SDK subprocess to loop back through
         // the proxy instead of using its native Claude Max auth. Also strip vars
@@ -727,7 +133,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         }
 
         // Session resume: look up cached Claude SDK session and classify mutation
-        const opencodeSessionId = c.req.header("x-opencode-session")
+        const opencodeSessionId = adapter.getSessionId(c)
         const lineageResult = lookupSession(opencodeSessionId, body.messages || [], workingDirectory)
         const isResume = lineageResult.type === "continuation" || lineageResult.type === "compaction"
         const isUndo = lineageResult.type === "undo"
@@ -992,39 +398,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               claudeExecutable = await resolveClaudeExecutableAsync()
             }
 
-            const response = query({
-              prompt,
-              options: {
-                maxTurns: passthrough ? 1 : 200,
-                cwd: workingDirectory,
-                model,
-                pathToClaudeCodeExecutable: claudeExecutable,
-                permissionMode: "bypassPermissions",
-                allowDangerouslySkipPermissions: true,
-                ...(systemContext ? {
-                  systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemContext }
-                } : {}),
-                ...(passthrough
-                  ? {
-                      disallowedTools: [...BLOCKED_BUILTIN_TOOLS, ...CLAUDE_CODE_ONLY_TOOLS],
-                      ...(passthroughMcp ? {
-                        allowedTools: passthroughMcp.toolNames,
-                        mcpServers: { [PASSTHROUGH_MCP_NAME]: passthroughMcp.server },
-                      } : {}),
-                    }
-                  : {
-                      disallowedTools: [...BLOCKED_BUILTIN_TOOLS, ...CLAUDE_CODE_ONLY_TOOLS],
-                      allowedTools: [...ALLOWED_MCP_TOOLS],
-                      mcpServers: { [MCP_SERVER_NAME]: createOpencodeMcpServer() },
-                    }),
-                plugins: [],
-                env: { ...cleanEnv, ENABLE_TOOL_SEARCH: "false" },
-                ...(Object.keys(sdkAgents).length > 0 ? { agents: sdkAgents } : {}),
-                ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-                ...(isUndo ? { forkSession: true, ...(undoRollbackUuid ? { resumeSessionAt: undoRollbackUuid } : {}) } : {}),
-                ...(sdkHooks ? { hooks: sdkHooks } : {}),
-              }
-            })
+            const response = query(buildQueryOptions({
+              prompt, model, workingDirectory, systemContext, claudeExecutable,
+              passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv,
+              resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, adapter,
+            }))
 
             for await (const message of response) {
               // Capture session ID from SDK messages
@@ -1201,40 +579,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
             try {
               let currentSessionId: string | undefined
-              const response = query({
-                prompt,
-                options: {
-                  maxTurns: passthrough ? 1 : 200,
-                  cwd: workingDirectory,
-                  model,
-                  pathToClaudeCodeExecutable: claudeExecutable,
-                  includePartialMessages: true,
-                  permissionMode: "bypassPermissions",
-                  allowDangerouslySkipPermissions: true,
-                  ...(systemContext ? {
-                    systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemContext }
-                  } : {}),
-                  ...(passthrough
-                    ? {
-                        disallowedTools: [...BLOCKED_BUILTIN_TOOLS, ...CLAUDE_CODE_ONLY_TOOLS],
-                        ...(passthroughMcp ? {
-                          allowedTools: passthroughMcp.toolNames,
-                          mcpServers: { [PASSTHROUGH_MCP_NAME]: passthroughMcp.server },
-                        } : {}),
-                      }
-                    : {
-                        disallowedTools: [...BLOCKED_BUILTIN_TOOLS, ...CLAUDE_CODE_ONLY_TOOLS],
-                        allowedTools: [...ALLOWED_MCP_TOOLS],
-                        mcpServers: { [MCP_SERVER_NAME]: createOpencodeMcpServer() },
-                      }),
-                  plugins: [],
-                  env: { ...cleanEnv, ENABLE_TOOL_SEARCH: "false" },
-                  ...(Object.keys(sdkAgents).length > 0 ? { agents: sdkAgents } : {}),
-                  ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-                  ...(isUndo ? { forkSession: true, ...(undoRollbackUuid ? { resumeSessionAt: undoRollbackUuid } : {}) } : {}),
-                  ...(sdkHooks ? { hooks: sdkHooks } : {}),
-                }
-              })
+              const response = query(buildQueryOptions({
+                prompt, model, workingDirectory, systemContext, claudeExecutable,
+                passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv,
+                resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, adapter,
+              }))
 
               const heartbeat = setInterval(() => {
                 heartbeatCount += 1
