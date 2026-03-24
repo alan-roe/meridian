@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.15.2](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.15.1...v1.15.2) (2026-03-24)
+
+
+### Bug Fixes
+
+* stabilize fingerprint resume by removing volatile systemContext and normalizing content format ([3256aac](https://github.com/rynfar/opencode-claude-max-proxy/commit/3256aacd32528f1d82e4298306e12d31296a9ef3))
+* stabilize fingerprint resume by removing volatile systemContext and normalizing content format ([be88868](https://github.com/rynfar/opencode-claude-max-proxy/commit/be88868a21da4239644af5c405de12f4f970ce5f)), closes [#111](https://github.com/rynfar/opencode-claude-max-proxy/issues/111)
+
 ## [1.15.1](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.15.0...v1.15.1) (2026-03-23)
 
 
