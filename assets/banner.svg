@@ -39,8 +39,8 @@
   <text x="540" y="195" font-family="Inter, -apple-system, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="72" font-weight="700" fill="#e0e7ff" letter-spacing="10">MERIDIAN</text>
 
   <!-- Tagline -->
-  <text x="543" y="240" font-family="Inter, -apple-system, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#8B7CF6" letter-spacing="3">YOUR SUBSCRIPTION. EVERY AGENT.</text>
+  <text x="543" y="240" font-family="Inter, -apple-system, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#8B7CF6" letter-spacing="3">HARNESS CLAUDE, YOUR WAY.</text>
 
-  <!-- Descriptor -->
+  <!-- Subtitle -->
   <text x="543" y="278" font-family="Inter, -apple-system, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="300" fill="rgba(255,255,255,0.35)">Local Anthropic API powered by the Claude Code SDK</text>
 </svg>

@@ -13,7 +13,7 @@
 
 Meridian turns your Claude Max subscription into a local Anthropic API. Any tool that speaks the Anthropic protocol — OpenCode, Crush, Cline, Continue, Aider — connects to Meridian and gets Claude, powered by your existing subscription through the official Claude Code SDK.
 
-No API keys to manage. No third-party services. One subscription, every agent.
+Harness Claude, your way.
 
 ## Quick Start
 

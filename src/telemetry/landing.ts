@@ -88,7 +88,7 @@ export const landingHtml = `<!DOCTYPE html>
     </svg>
     <h1>MERIDIAN</h1>
   </div>
-  <div class="tagline">Your subscription. Every agent.</div>
+  <div class="tagline">Harness Claude, your way.</div>
   <div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading\u2026</div></div>
 </div>
 <script>
