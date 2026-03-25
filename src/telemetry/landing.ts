@@ -76,14 +76,15 @@ export const landingHtml = `<!DOCTYPE html>
 <body>
 <div class="container">
   <div class="header">
-    <svg width="40" height="40" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs>
-      <rect width="128" height="128" rx="28" fill="#0f0b1a"/>
-      <path d="M 28 96 Q 28 64 64 64" stroke="url(#g)" stroke-width="7" fill="none" stroke-linecap="round"/>
-      <path d="M 64 28 Q 64 64 64 64" stroke="url(#g)" stroke-width="7" fill="none" stroke-linecap="round"/>
-      <path d="M 100 96 Q 100 64 64 64" stroke="url(#g)" stroke-width="7" fill="none" stroke-linecap="round"/>
-      <circle cx="28" cy="96" r="6" fill="#818cf8"/><circle cx="64" cy="28" r="6" fill="#818cf8"/><circle cx="100" cy="96" r="6" fill="#818cf8"/>
-      <circle cx="64" cy="64" r="9" fill="url(#g)"/>
+    <svg width="40" height="40" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width="64" height="64" rx="14" fill="#1C1830"/>
+      <line x1="32" y1="10" x2="32" y2="54" stroke="#8B7CF6" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M16 20 A18 18 0 0 1 48 20" fill="none" stroke="#C4B5FD" stroke-width="1.2" opacity="0.4"/>
+      <path d="M16 44 A18 18 0 0 0 48 44" fill="none" stroke="#C4B5FD" stroke-width="1.2" opacity="0.4"/>
+      <path d="M20 30 A14 14 0 0 1 44 30" fill="none" stroke="#C4B5FD" stroke-width="0.8" opacity="0.2"/>
+      <path d="M20 34 A14 14 0 0 0 44 34" fill="none" stroke="#C4B5FD" stroke-width="0.8" opacity="0.2"/>
+      <circle cx="32" cy="10" r="3.5" fill="#C4B5FD"/><circle cx="32" cy="54" r="3.5" fill="#C4B5FD"/>
+      <circle cx="32" cy="32" r="3" fill="#8B7CF6"/>
     </svg>
     <h1>MERIDIAN</h1>
   </div>
