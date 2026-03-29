@@ -485,7 +485,7 @@ curl -s http://127.0.0.1:3456/telemetry/logs?limit=5 | python3 -m json.tool | he
 ```
 
 **Pass criteria:**
-- `/telemetry` returns HTML with `<title>Claude Max Proxy`
+- `/telemetry` returns HTML with `<title>Meridian`
 - `/telemetry/requests` returns an array of request metrics with `requestId`, `model`, `lineageType`
 - `/telemetry/summary` returns `totalRequests > 0`, `errorCount`, percentile latencies
 - `/telemetry/logs` returns an array with `level`, `category`, `message` fields
@@ -934,10 +934,10 @@ import json
 with open('$HOME/.factory/settings.json') as f:
     s = json.load(f)
 s['customModels'] = [
-    {'model':'claude-sonnet-4-6',          'name':'Sonnet 4.6 (1M — Claude Max)', 'provider':'anthropic','baseUrl':'http://127.0.0.1:3457','apiKey':'sk-proxy'},
-    {'model':'claude-opus-4-6',            'name':'Opus 4.6 (1M — Claude Max)',   'provider':'anthropic','baseUrl':'http://127.0.0.1:3457','apiKey':'sk-proxy'},
-    {'model':'claude-haiku-4-5-20251001',  'name':'Haiku 4.5 (Claude Max)',       'provider':'anthropic','baseUrl':'http://127.0.0.1:3457','apiKey':'sk-proxy'},
-    {'model':'claude-sonnet-4-5-20250929', 'name':'Sonnet 4.5 (Claude Max)',      'provider':'anthropic','baseUrl':'http://127.0.0.1:3457','apiKey':'sk-proxy'},
+    {'model':'claude-sonnet-4-6',          'name':'Sonnet 4.6 (1M — Meridian)', 'provider':'anthropic','baseUrl':'http://127.0.0.1:3457','apiKey':'sk-proxy'},
+    {'model':'claude-opus-4-6',            'name':'Opus 4.6 (1M — Meridian)',   'provider':'anthropic','baseUrl':'http://127.0.0.1:3457','apiKey':'sk-proxy'},
+    {'model':'claude-haiku-4-5-20251001',  'name':'Haiku 4.5 (Meridian)',       'provider':'anthropic','baseUrl':'http://127.0.0.1:3457','apiKey':'sk-proxy'},
+    {'model':'claude-sonnet-4-5-20250929', 'name':'Sonnet 4.5 (Meridian)',      'provider':'anthropic','baseUrl':'http://127.0.0.1:3457','apiKey':'sk-proxy'},
 ]
 with open('$HOME/.factory/settings.json', 'w') as f:
     json.dump(s, f, indent=2)
@@ -1310,14 +1310,14 @@ These tests verify the Crush adapter. Crush connects via a provider entry in `~/
 
 ### Crush Provider Setup
 
-Add the `claude-max` provider to `~/.config/crush/crush.json`:
+Add the `meridian` provider to `~/.config/crush/crush.json`:
 
 ```json
 {
   "providers": {
-    "claude-max": {
-      "id": "claude-max",
-      "name": "Claude Max (Meridian)",
+    "meridian": {
+      "id": "meridian",
+      "name": "Meridian",
       "type": "anthropic",
       "base_url": "http://127.0.0.1:3456",
       "api_key": "dummy",
@@ -1354,10 +1354,10 @@ Add the `claude-max` provider to `~/.config/crush/crush.json`:
 
 Verify Crush sees the models:
 ```bash
-crush models | grep claude-max
-# → claude-max/claude-sonnet-4-6
-# → claude-max/claude-opus-4-6
-# → claude-max/claude-haiku-4-5-20251001
+crush models | grep meridian
+# → meridian/claude-sonnet-4-6
+# → meridian/claude-opus-4-6
+# → meridian/claude-haiku-4-5-20251001
 ```
 
 ---
@@ -1368,7 +1368,7 @@ crush models | grep claude-max
 
 ```bash
 crush run \
-  --model claude-max/claude-sonnet-4-6 \
+  --model meridian/claude-sonnet-4-6 \
   --cwd /path/to/your/project \
   --quiet \
   "Respond with exactly: CRUSH_E2E_OK"
@@ -1388,14 +1388,14 @@ crush run \
 ```bash
 # Turn 1: establish session
 crush run \
-  --model claude-max/claude-sonnet-4-6 \
+  --model meridian/claude-sonnet-4-6 \
   --cwd /path/to/your/project \
   --quiet \
   "Remember the code: CRUSH_CONT_99. Reply with 'stored'."
 
 # Turn 2: continue that session
 crush run \
-  --model claude-max/claude-sonnet-4-6 \
+  --model meridian/claude-sonnet-4-6 \
   --cwd /path/to/your/project \
   --continue \
   --quiet \
@@ -1415,7 +1415,7 @@ crush run \
 
 ```bash
 crush run \
-  --model claude-max/claude-sonnet-4-6 \
+  --model meridian/claude-sonnet-4-6 \
   --cwd /path/to/your/project \
   --quiet \
   "Use the ls tool to list the files in the current directory and show me the output"
@@ -1436,7 +1436,7 @@ crush run \
 
 ```bash
 crush run \
-  --model claude-max/claude-sonnet-4-6 \
+  --model meridian/claude-sonnet-4-6 \
   --cwd /path/to/project \
   --quiet \
   "Write the text 'CRUSH_WRITE_OK' to /tmp/crush-write-test.txt"
@@ -1457,15 +1457,15 @@ rm /tmp/crush-write-test.txt
 
 ```bash
 # Sonnet 4.6 → sonnet[1m]
-crush run --model claude-max/claude-sonnet-4-6 --quiet "Say: SONNET_OK" 2>/dev/null
+crush run --model meridian/claude-sonnet-4-6 --quiet "Say: SONNET_OK" 2>/dev/null
 # Proxy log: model=sonnet[1m]
 
 # Opus 4.6 → opus[1m]
-crush run --model claude-max/claude-opus-4-6 --quiet "Say: OPUS_OK" 2>/dev/null
+crush run --model meridian/claude-opus-4-6 --quiet "Say: OPUS_OK" 2>/dev/null
 # Proxy log: model=opus[1m]
 
 # Haiku 4.5 → haiku
-crush run --model claude-max/claude-haiku-4-5-20251001 --quiet "Say: HAIKU_OK" 2>/dev/null
+crush run --model meridian/claude-haiku-4-5-20251001 --quiet "Say: HAIKU_OK" 2>/dev/null
 # Proxy log: model=haiku
 ```
 
@@ -1482,7 +1482,7 @@ crush run --model claude-max/claude-haiku-4-5-20251001 --quiet "Say: HAIKU_OK" 2
 
 ```bash
 # Fire all three agents in sequence
-crush run --model claude-max/claude-haiku-4-5-20251001 --quiet "Say: CRUSH_COEXIST" 2>/dev/null
+crush run --model meridian/claude-haiku-4-5-20251001 --quiet "Say: CRUSH_COEXIST" 2>/dev/null
 
 curl -s http://127.0.0.1:3456/v1/messages \
   -H "Content-Type: application/json" \
@@ -1705,7 +1705,7 @@ cline --yolo --model claude-haiku-4-5-20251001 --timeout 20 --json "Say: OK" 2>/
 cline --yolo --model claude-haiku-4-5-20251001 --timeout 20 --json "Say: CLINE_COEXIST" 2>/dev/null | grep completion_result
 
 # Crush
-crush run --model claude-max/claude-haiku-4-5-20251001 --quiet "Say: CRUSH_COEXIST" 2>/dev/null
+crush run --model meridian/claude-haiku-4-5-20251001 --quiet "Say: CRUSH_COEXIST" 2>/dev/null
 
 # OpenCode (curl)
 curl -s http://127.0.0.1:3456/v1/messages \

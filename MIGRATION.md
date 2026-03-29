@@ -118,10 +118,10 @@ No changes needed. The `anthropicBaseUrl` in `~/.cline/data/globalState.json` po
 docker pull opencode-claude-max-proxy
 
 # New
-docker pull @rynfar/meridian
+docker pull meridian
 ```
 
-The `docker-compose.yml` image name changes from `claude-max-proxy` to `@rynfar/meridian`.
+The `docker-compose.yml` image name changes from `claude-max-proxy` to `meridian`.
 
 ## 8. GitHub Repository
 
@@ -131,14 +131,14 @@ https://github.com/rynfar/opencode-claude-max-proxy
 ```
 to:
 ```
-https://github.com/rynfar/@rynfar/meridian
+https://github.com/rynfar/meridian
 ```
 
 GitHub automatically redirects the old URL, so existing links, bookmarks, and git remotes continue to work. To update your local clone:
 
 ```bash
 cd ~/repos/opencode-claude-max-proxy
-git remote set-url origin https://github.com/rynfar/@rynfar/meridian.git
+git remote set-url origin https://github.com/rynfar/meridian.git
 cd ..
 mv opencode-claude-max-proxy meridian  # optional: rename local directory
 ```

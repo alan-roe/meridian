@@ -78,9 +78,9 @@ Add a provider to `~/.config/crush/crush.json`:
 ```json
 {
   "providers": {
-    "claude-max": {
-      "id": "claude-max",
-      "name": "Claude Max (Meridian)",
+    "meridian": {
+      "id": "meridian",
+      "name": "Meridian",
       "type": "anthropic",
       "base_url": "http://127.0.0.1:3456",
       "api_key": "dummy",
@@ -97,8 +97,8 @@ Add a provider to `~/.config/crush/crush.json`:
 Then use Meridian models in Crush:
 
 ```bash
-crush run --model claude-max/claude-sonnet-4-6 "refactor this function"
-crush --model claude-max/claude-opus-4-6       # interactive TUI
+crush run --model meridian/claude-sonnet-4-6 "refactor this function"
+crush --model meridian/claude-opus-4-6       # interactive TUI
 ```
 
 Crush is automatically detected from its `Charm-Crush/` User-Agent — no extra configuration needed. In `crush run` headless mode all tool operations (read, write, bash) execute automatically without prompting.
@@ -114,21 +114,21 @@ Droid connects via its BYOK (Bring Your Own Key) feature. This is a one-time set
   "customModels": [
     {
       "model": "claude-sonnet-4-6",
-      "name": "Sonnet 4.6 (1M — Claude Max)",
+      "name": "Sonnet 4.6 (1M — Meridian)",
       "provider": "anthropic",
       "baseUrl": "http://127.0.0.1:3456",
       "apiKey": "x"
     },
     {
       "model": "claude-opus-4-6",
-      "name": "Opus 4.6 (1M — Claude Max)",
+      "name": "Opus 4.6 (1M — Meridian)",
       "provider": "anthropic",
       "baseUrl": "http://127.0.0.1:3456",
       "apiKey": "x"
     },
     {
       "model": "claude-haiku-4-5-20251001",
-      "name": "Haiku 4.5 (Claude Max)",
+      "name": "Haiku 4.5 (Meridian)",
       "provider": "anthropic",
       "baseUrl": "http://127.0.0.1:3456",
       "apiKey": "x"
