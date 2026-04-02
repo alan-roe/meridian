@@ -304,6 +304,9 @@ See [`adapters/detect.ts`](src/proxy/adapters/detect.ts) and [`adapters/opencode
 | `MERIDIAN_IDLE_TIMEOUT_SECONDS` | `CLAUDE_PROXY_IDLE_TIMEOUT_SECONDS` | `120` | HTTP keep-alive timeout |
 | `MERIDIAN_TELEMETRY_SIZE` | `CLAUDE_PROXY_TELEMETRY_SIZE` | `1000` | Telemetry ring buffer size |
 | `MERIDIAN_NO_FILE_CHANGES` | `CLAUDE_PROXY_NO_FILE_CHANGES` | unset | Disable "Files changed" summary in responses |
+| `MERIDIAN_SONNET_MODEL` | `CLAUDE_PROXY_SONNET_MODEL` | `sonnet[1m]`* | Force sonnet tier: `sonnet` (200k) or `sonnet[1m]` (1M). Set to `sonnet` if you hit 1M context rate limits frequently |
+
+*`sonnet[1m]` only for Max subscribers with Extra Usage enabled; falls back to `sonnet` automatically otherwise.
 
 ## Programmatic API
 
