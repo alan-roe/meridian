@@ -22,8 +22,6 @@ import {
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-// Import sessionStore via the same module graph as server.ts so setSessionStoreDir
-// affects the same singleton that the server/cache layer reads from.
 const { setSessionStoreDir, storeSharedSession } = await import("../proxy/sessionStore")
 
 // ─── captured query params ────────────────────────────────────────────────────
@@ -414,11 +412,13 @@ describe("GET /v1/sessions/:claudeSessionId/context-usage — shared store", () 
   beforeEach(() => {
     tmpSessionDir = mkdtempSync(join(tmpdir(), "sdk-params-session-store-"))
     setSessionStoreDir(tmpSessionDir)
-    clearSessionCache()
+    // Do NOT call clearSessionCache() here — it calls clearSharedSessions() which
+    // would immediately wipe the tmp dir we just wrote to.
   })
 
   afterEach(() => {
     setSessionStoreDir(null)
+    clearSessionCache()
     try { rmSync(tmpSessionDir, { recursive: true, force: true }) } catch {}
   })
 
