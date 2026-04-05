@@ -119,6 +119,11 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
         ...cleanEnv,
         ENABLE_TOOL_SEARCH: "false",
         ...(passthrough ? { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } : {}),
+        // When running as root (Docker, Unraid, NAS), set IS_SANDBOX=1 to
+        // bypass the SDK's root check. Without this, the SDK exits with:
+        // "--dangerously-skip-permissions cannot be used with root/sudo"
+        // See: https://github.com/rynfar/meridian/issues/256
+        ...(process.getuid?.() === 0 ? { IS_SANDBOX: "1" } : {}),
       },
       ...(Object.keys(sdkAgents).length > 0 ? { agents: sdkAgents } : {}),
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
