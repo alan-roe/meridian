@@ -11,7 +11,7 @@
 
 ---
 
-Meridian turns your Claude Max subscription into a local Anthropic API. Any tool that speaks the Anthropic or OpenAI protocol — OpenCode, OpenClaw, Crush, Cline, Aider, Pi, Droid, Open WebUI — connects to Meridian and gets Claude, powered by your existing subscription through the official Claude Code SDK.
+Meridian bridges the Claude Code SDK to the standard Anthropic API. No OAuth interception. No binary patches. No hacks. Just pure, documented SDK calls. Any tool that speaks the Anthropic or OpenAI protocol — OpenCode, OpenClaw, Crush, Cline, Aider, Pi, Droid, Open WebUI — connects to Meridian and gets Claude, with session management, streaming, and prompt caching handled natively by the SDK.
 
 > [!IMPORTANT]
 > ### Meridian is unaffected by the April 5, 2025 third-party blocks
@@ -59,9 +59,7 @@ The API key value doesn't matter — Meridian authenticates through your Claude 
 
 ## Why Meridian?
 
-You're paying for Claude Max. It includes programmatic access through the Claude Code SDK. But your favorite coding tools expect an Anthropic API endpoint and an API key.
-
-Meridian bridges that gap. It runs locally, accepts standard Anthropic API requests, and routes them through the SDK using your Max subscription.
+The Claude Code SDK provides programmatic access to Claude. But your favorite coding tools expect an Anthropic API endpoint. Meridian bridges that gap — it runs locally, accepts standard API requests, and routes them through the SDK. Claude Code does the heavy lifting; Meridian translates the output.
 
 <p align="center">
   <img src="assets/how-it-works.svg" alt="How Meridian works" width="920"/>
