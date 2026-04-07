@@ -143,6 +143,14 @@ function logUsage(requestId: string, usage: TokenUsage): void {
   console.error(`[PROXY] ${requestId} usage: ${parts.join(" ")}`)
 }
 
+function computeCacheHitRate(usage: TokenUsage | undefined): number | undefined {
+  if (!usage) return undefined
+  const read = usage.cache_read_input_tokens ?? 0
+  const total = (usage.input_tokens ?? 0)
+  if (total === 0) return undefined
+  return read / total
+}
+
 export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServer {
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
 
@@ -877,6 +885,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             contentBlocks: contentBlocks.length,
             textEvents: 0,
             error: null,
+            inputTokens: lastUsage?.input_tokens,
+            outputTokens: lastUsage?.output_tokens,
+            cacheReadInputTokens: lastUsage?.cache_read_input_tokens,
+            cacheCreationInputTokens: lastUsage?.cache_creation_input_tokens,
+            cacheHitRate: computeCacheHitRate(lastUsage),
           })
 
           // Store session for future resume
@@ -1416,6 +1429,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   contentBlocks: eventsForwarded,
                   textEvents: textEventsForwarded,
                   error: null,
+                  inputTokens: lastUsage?.input_tokens,
+                  outputTokens: lastUsage?.output_tokens,
+                  cacheReadInputTokens: lastUsage?.cache_read_input_tokens,
+                  cacheCreationInputTokens: lastUsage?.cache_creation_input_tokens,
+                  cacheHitRate: computeCacheHitRate(lastUsage),
                 })
 
                 if (textEventsForwarded === 0) {
