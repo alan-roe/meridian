@@ -365,6 +365,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             console.error(`[PROXY] ${requestMeta.requestId} ignoring malformed x-opencode-thinking header: ${e instanceof Error ? e.message : String(e)}`)
           }
         }
+        // When the thinking beta is stripped (e.g. strip-all policy), disable thinking
+        // at the SDK level to prevent thinking blocks from being generated in the
+        // session state. Without this, resumed sessions contain thinking blocks that
+        // the API rejects when the thinking beta header is absent.
+        const thinkingBetaStripped = betaFilter.stripped.some(b => b.startsWith("interleaved-thinking"))
+        if (thinkingBetaStripped) {
+          thinking = { type: "disabled" }
+          if (betaFilter.stripped.length > 0) {
+            console.error(`[PROXY] ${requestMeta.requestId} thinking disabled (thinking beta stripped by ${getBetaPolicyFromEnv()} policy)`)
+          }
+        }
         const parsedBudget = taskBudgetHeader ? Number.parseInt(taskBudgetHeader, 10) : NaN
         const taskBudget = Number.isFinite(parsedBudget)
           ? { total: parsedBudget }

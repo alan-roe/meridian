@@ -228,6 +228,72 @@ describe("SDK param passthrough — header overrides", () => {
   })
 })
 
+// ─── strip-all: thinking disabled when thinking beta stripped ────────────────
+
+describe("strip-all policy disables thinking when thinking beta is stripped", () => {
+  let savedPolicy: string | undefined
+
+  beforeEach(() => {
+    capturedOptions = {}
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    clearSessionCache()
+    savedPolicy = process.env.MERIDIAN_BETA_POLICY
+    process.env.MERIDIAN_BETA_POLICY = "strip-all"
+  })
+
+  afterEach(() => {
+    if (savedPolicy !== undefined) process.env.MERIDIAN_BETA_POLICY = savedPolicy
+    else delete process.env.MERIDIAN_BETA_POLICY
+  })
+
+  it("sets thinking to disabled when strip-all removes the thinking beta", async () => {
+    const app = createTestApp()
+    await post(app, { ...BASE_BODY, thinking: { type: "enabled", budgetTokens: 5000 } }, {
+      "anthropic-beta": "interleaved-thinking-2025-05-14",
+    })
+    expect(capturedOptions.thinking).toEqual({ type: "disabled" })
+  })
+
+  it("sets thinking to disabled even when body requests thinking", async () => {
+    const app = createTestApp()
+    await post(app, { ...BASE_BODY, thinking: { type: "adaptive" } }, {
+      "anthropic-beta": "interleaved-thinking-2025-05-14",
+    })
+    expect(capturedOptions.thinking).toEqual({ type: "disabled" })
+  })
+
+  it("sets thinking to disabled when header override requests thinking", async () => {
+    const app = createTestApp()
+    await post(app, BASE_BODY, {
+      "anthropic-beta": "interleaved-thinking-2025-05-14",
+      "x-opencode-thinking": JSON.stringify({ type: "enabled", budgetTokens: 8192 }),
+    })
+    expect(capturedOptions.thinking).toEqual({ type: "disabled" })
+  })
+
+  it("does not force disable thinking under allow-safe policy", async () => {
+    process.env.MERIDIAN_BETA_POLICY = "allow-safe"
+    const thinking = { type: "enabled", budgetTokens: 5000 }
+    const app = createTestApp()
+    await post(app, { ...BASE_BODY, thinking }, {
+      "anthropic-beta": "interleaved-thinking-2025-05-14",
+    })
+    // allow-safe forwards the thinking beta, so thinking should remain as requested
+    expect(capturedOptions.thinking).toEqual(thinking)
+  })
+
+  it("strips all betas AND disables thinking together", async () => {
+    const app = createTestApp()
+    await post(app, { ...BASE_BODY, thinking: { type: "enabled" } }, {
+      "anthropic-beta": "interleaved-thinking-2025-05-14, context-1m-2025-08-07",
+    })
+    // All betas stripped
+    expect(capturedOptions.betas).toBeUndefined()
+    // Thinking disabled
+    expect(capturedOptions.thinking).toEqual({ type: "disabled" })
+  })
+})
+
 // ─── usage logging ────────────────────────────────────────────────────────────
 
 describe("Usage logging", () => {
