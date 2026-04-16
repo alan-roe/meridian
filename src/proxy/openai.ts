@@ -55,6 +55,10 @@ export interface OpenAiChatRequest {
   max_completion_tokens?: number
   temperature?: number
   top_p?: number
+  response_format?: {
+    type: string
+    json_schema?: { name?: string; schema?: Record<string, unknown> }
+  }
 }
 
 export interface AnthropicTextBlock {
@@ -86,6 +90,7 @@ export interface AnthropicRequestBody {
   system?: string
   temperature?: number
   top_p?: number
+  response_format?: { type: "json_schema"; schema: Record<string, unknown> }
 }
 
 export interface AnthropicUsage {
@@ -282,6 +287,15 @@ export function translateOpenAiToAnthropic(body: OpenAiChatRequest): AnthropicRe
   if (systemPrompt) result.system = systemPrompt
   if (body.temperature !== undefined) result.temperature = body.temperature
   if (body.top_p !== undefined) result.top_p = body.top_p
+
+  // Translate response_format: OpenAI nests schema under json_schema.schema,
+  // Anthropic/SDK expects it flat under response_format.schema
+  if (body.response_format?.type === "json_schema" && body.response_format.json_schema?.schema) {
+    result.response_format = {
+      type: "json_schema",
+      schema: body.response_format.json_schema.schema,
+    }
+  }
 
   return result
 }

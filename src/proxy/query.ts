@@ -80,6 +80,8 @@ export interface QueryContext {
   sdkDebug?: boolean
   /** Additional directories Claude can access */
   additionalDirectories?: string[]
+  /** Output format for structured outputs (JSON schema) */
+  outputFormat?: { type: "json_schema"; schema: Record<string, unknown> }
 }
 
 /**
@@ -121,6 +123,7 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
     mcpServerName, allowedMcpTools, onStderr,
     effort, thinking, taskBudget, betas, settingSources, codeSystemPrompt, clientSystemPrompt,
     memory, dreaming, sharedMemory, maxBudgetUsd, fallbackModel, sdkDebug, additionalDirectories,
+    outputFormat,
   } = ctx
 
   const allBlockedTools = [...blockedTools, ...incompatibleTools]
@@ -196,6 +199,7 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       ...(fallbackModel ? { fallbackModel } : {}),
       ...(sdkDebug ? { debug: true } : {}),
       ...(additionalDirectories && additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+      ...(outputFormat ? { outputFormat } : {}),
     }
   }
 }

@@ -524,6 +524,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           : body.task_budget ? { total: body.task_budget.total ?? body.task_budget } : undefined
         const betas = betaFilter.forwarded
 
+        // Structured output: translate response_format to SDK outputFormat
+        const outputFormat = body.response_format?.type === "json_schema" && body.response_format?.schema
+          ? { type: "json_schema" as const, schema: body.response_format.schema as Record<string, unknown> }
+          : undefined
+
         // Session resume: look up cached Claude SDK session and classify mutation
         const agentSessionId = adapter.getSessionId(c)
         // Scope session keys by profile to isolate resume state across accounts.
@@ -888,6 +893,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     additionalDirectories: sdkFeatures.additionalDirectories
                       ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                       : undefined,
+                    outputFormat,
                   }))) {
                     // Only count real assistant content — not SDK error messages
                     // (which arrive as type:"assistant" with an error field set).
@@ -928,6 +934,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       additionalDirectories: sdkFeatures.additionalDirectories
                         ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                         : undefined,
+                      outputFormat,
                     }))
                     return
                   }
@@ -1110,6 +1117,19 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   input: tu.input,
                 })
               }
+            }
+          }
+
+          // Structured output: when outputFormat is set, the SDK wraps the JSON
+          // in a StructuredOutput tool_use block. Extract its input and replace
+          // content with a single text block so clients get clean JSON.
+          if (outputFormat) {
+            const structuredBlock = contentBlocks.find(
+              (b) => b.type === "tool_use" && (b as Record<string, unknown>).name === "StructuredOutput"
+            ) as Record<string, unknown> | undefined
+            if (structuredBlock?.input != null) {
+              contentBlocks.length = 0
+              contentBlocks.push({ type: "text", text: JSON.stringify(structuredBlock.input) })
             }
           }
 
@@ -1310,6 +1330,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       additionalDirectories: sdkFeatures.additionalDirectories
                         ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                         : undefined,
+                      outputFormat,
                     }))) {
                       if ((event as any).type === "stream_event") {
                         didYieldClientEvent = true
@@ -1347,6 +1368,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                         additionalDirectories: sdkFeatures.additionalDirectories
                           ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                           : undefined,
+                        outputFormat,
                       }))
                       return
                     }
@@ -2157,9 +2179,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
     // Route internally via app.fetch() — no network roundtrip.
     // Hono resolves the path in-process; the URL scheme/host are ignored.
+    // Forward auth headers so the internal route passes requireAuth when
+    // MERIDIAN_API_KEY is set.
+    const internalHeaders: Record<string, string> = { "Content-Type": "application/json" }
+    const fwdApiKey = c.req.header("x-api-key")
+    const fwdAuth = c.req.header("authorization")
+    if (fwdApiKey) internalHeaders["x-api-key"] = fwdApiKey
+    else if (fwdAuth) internalHeaders["authorization"] = fwdAuth
     const internalReq = new Request("http://internal/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: internalHeaders,
       body: JSON.stringify(anthropicBody),
     })
     const internalRes = await app.fetch(internalReq)
