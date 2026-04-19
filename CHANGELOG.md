@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.37.7](https://github.com/rynfar/meridian/compare/meridian-v1.37.6...meridian-v1.37.7) (2026-04-19)
+
+
+### Bug Fixes
+
+* remove skip-labeling from release-please so releases auto-cut on merge ([#395](https://github.com/rynfar/meridian/issues/395)) ([3abf5e9](https://github.com/rynfar/meridian/commit/3abf5e933cb09a24a55fa5ea2342e971804106de))
+
 ## [1.37.6](https://github.com/rynfar/meridian/compare/meridian-v1.37.5...meridian-v1.37.6) (2026-04-19)
 
 
