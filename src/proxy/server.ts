@@ -1070,6 +1070,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // Capture token usage from the assistant message
                 const msgUsage = message.message.usage as TokenUsage | undefined
                 if (msgUsage) lastUsage = { ...lastUsage, ...msgUsage }
+              } else if (message.type === "result") {
+                // Canonical cumulative totals for the whole request — spans all
+                // assistant turns and internal SDK syntheses. Per-assistant
+                // usage events carry only that segment's counters, so merging
+                // them produces Frankenstein numbers (e.g. output_tokens from
+                // the final tiny end-of-turn event, cache_creation_input_tokens
+                // preserved from the first event). Overwrite, don't merge.
+                const resultUsage = (message as { usage?: TokenUsage }).usage
+                if (resultUsage) lastUsage = resultUsage
               }
             }
 
