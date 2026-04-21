@@ -62,6 +62,7 @@ import {
   computeLineageHash,
   hashMessage,
   computeMessageHashes,
+  normalizeContextUsage,
   type LineageResult,
   type TokenUsageIteration,
   type TokenUsage,
@@ -191,10 +192,6 @@ function flattenUserContent(
     .join("\n")
 }
 
-function normalizeContextUsage(usage: TokenUsage): TokenUsageIteration {
-  const lastIteration = usage.iterations?.at(-1)
-  return lastIteration ?? usage
-}
 
 /**
  * Build a prompt from all messages for a fresh (non-resume) session.

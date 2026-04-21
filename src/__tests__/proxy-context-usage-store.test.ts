@@ -125,4 +125,36 @@ describe("GET /v1/sessions/:claudeSessionId/context-usage — shared store", () 
     expect(usage.type).toBe("message")
     expect(usage.iterations).toBeUndefined()
   })
+
+  it("falls back to top-level usage when iterations is empty", async () => {
+    const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
+    const claudeSessionId = "sess_shared_usage_empty_iterations_001"
+
+    storeSharedSession(
+      "shared-key-usage-empty-iterations",
+      claudeSessionId,
+      1,
+      "lineage",
+      ["msg-hash"],
+      [null],
+      {
+        input_tokens: 500,
+        cache_creation_input_tokens: 100,
+        cache_read_input_tokens: 200,
+        output_tokens: 50,
+        iterations: [],
+      }
+    )
+
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/sessions/${claudeSessionId}/context-usage`)
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as Record<string, unknown>
+    const usage = body.context_usage as Record<string, unknown>
+    expect(body.session_id).toBe(claudeSessionId)
+    expect(usage.input_tokens).toBe(500)
+    expect(usage.output_tokens).toBe(50)
+  })
 })
