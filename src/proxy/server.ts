@@ -62,7 +62,9 @@ import {
   computeLineageHash,
   hashMessage,
   computeMessageHashes,
+  normalizeContextUsage,
   type LineageResult,
+  type TokenUsageIteration,
   type TokenUsage,
 } from "./session/lineage"
 // Re-export for backwards compatibility (existing tests import from here)
@@ -189,6 +191,7 @@ function flattenUserContent(
     .filter(Boolean)
     .join("\n")
 }
+
 
 /**
  * Build a prompt from all messages for a fresh (non-resume) session.
@@ -2250,7 +2253,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     if (!session.contextUsage) {
       return c.json({ error: "No usage data available for this session" }, 404)
     }
-    return c.json({ session_id: claudeSessionId, context_usage: session.contextUsage })
+    return c.json({ session_id: claudeSessionId, context_usage: normalizeContextUsage(session.contextUsage) })
   })
 
   // --- Session Recovery ---
