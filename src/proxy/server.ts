@@ -10,6 +10,7 @@ import type { ProxyConfig, ProxyInstance, ProxyServer } from "./types"
 export type { ProxyConfig, ProxyInstance, ProxyServer }
 import { claudeLog } from "../logger"
 import { exec as execCallback } from "child_process"
+import { statSync } from "node:fs"
 import { promisify } from "util"
 import { randomUUID } from "crypto"
 import { withClaudeLogContext } from "../logger"
@@ -269,6 +270,34 @@ function checkTokenHealth(
   }
 }
 
+/** Track client cwds we've already warned about (avoid log spam per-request). */
+const warnedMissingCwds = new Set<string>()
+
+/**
+ * Resolve a safe `cwd` for the SDK subprocess.
+ *
+ * node's child_process.spawn fails with ENOENT when `cwd` doesn't exist, and
+ * the Agent SDK surfaces that as "Claude Code native binary not found" — which
+ * is misleading, because the binary is fine; the directory isn't. Client-side
+ * agents (pi, remote opencode) send their local filesystem path, which is
+ * not present on a remote Meridian host.
+ *
+ * We keep the client-reported path for session identity (so lineage/cache keys
+ * stay stable per-project) and use the server's own cwd for the actual spawn
+ * when the reported path isn't a real directory here.
+ */
+function resolveSubprocessCwd(clientCwd: string): string {
+  try {
+    if (statSync(clientCwd).isDirectory()) return clientCwd
+  } catch {}
+  const fallback = process.cwd()
+  if (!warnedMissingCwds.has(clientCwd)) {
+    warnedMissingCwds.add(clientCwd)
+    console.warn(`[meridian] client cwd "${clientCwd}" does not exist on this server; using ${fallback} for SDK subprocess. Set MERIDIAN_WORKDIR to override.`)
+  }
+  return fallback
+}
+
 export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServer {
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
   const serverVersion = finalConfig.version ?? "unknown"
@@ -385,6 +414,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const adapterStreamPref = adapter.prefersStreaming?.(body)
         const stream = adapterStreamPref !== undefined ? adapterStreamPref : (body.stream ?? false)
         const workingDirectory = (process.env.MERIDIAN_WORKDIR ?? process.env.CLAUDE_PROXY_WORKDIR) || adapter.extractWorkingDirectory(body) || process.cwd()
+        // The SDK subprocess `cwd` must exist on this server, or node's spawn()
+        // returns ENOENT and the Agent SDK mistranslates it as "Claude Code native
+        // binary not found". Client-side agents over Tailscale/Cloudflare (pi,
+        // remote opencode) send their local path, which doesn't exist here.
+        // We keep the reported path as session identity above, but fall back
+        // to a real server-side dir for the actual subprocess.
+        const subprocessCwd = resolveSubprocessCwd(workingDirectory)
 
         // Strip env vars that would cause the SDK subprocess to loop back through
         // the proxy instead of using its native Claude Max auth. Also strip vars
@@ -829,7 +865,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 let didYieldContent = false
                 try {
                   for await (const event of query(buildQueryOptions({
-                    prompt: makePrompt(), model, workingDirectory, systemContext, claudeExecutable,
+                    prompt: makePrompt(), model, workingDirectory: subprocessCwd, systemContext, claudeExecutable,
                     passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
                     resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, adapter, onStderr,
                     effort, thinking, taskBudget, betas, settingSources,
@@ -869,7 +905,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                     yield* query(buildQueryOptions({
                       prompt: buildFreshPrompt(allMessages, sanitizeOpts),
-                      model, workingDirectory, systemContext, claudeExecutable,
+                      model, workingDirectory: subprocessCwd, systemContext, claudeExecutable,
                       passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
                       resumeSessionId: undefined, isUndo: false, undoRollbackUuid: undefined, sdkHooks, adapter, onStderr,
                       effort, thinking, taskBudget, betas, settingSources,
@@ -1250,7 +1286,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   let didYieldClientEvent = false
                   try {
                     for await (const event of query(buildQueryOptions({
-                      prompt: makePrompt(), model, workingDirectory, systemContext, claudeExecutable,
+                      prompt: makePrompt(), model, workingDirectory: subprocessCwd, systemContext, claudeExecutable,
                       passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
                       resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, adapter, onStderr,
                       effort, thinking, taskBudget, betas, settingSources,
@@ -1287,7 +1323,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                       yield* query(buildQueryOptions({
                         prompt: buildFreshPrompt(allMessages, sanitizeOpts),
-                        model, workingDirectory, systemContext, claudeExecutable,
+                        model, workingDirectory: subprocessCwd, systemContext, claudeExecutable,
                         passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
                         resumeSessionId: undefined, isUndo: false, undoRollbackUuid: undefined, sdkHooks, adapter, onStderr,
                         effort, thinking, taskBudget, betas, settingSources,
@@ -1761,6 +1797,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 }
               }
             } catch (error) {
+              const catchQueueWaitMs = requestMeta.queueStartedAt - requestMeta.queueEnteredAt
+              const catchTotalDurationMs = Date.now() - requestStartAt
+
               if (isClosedControllerError(error)) {
                 streamClosed = true
                 claudeLog("stream.client_closed", {
@@ -1768,7 +1807,34 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   streamEventsSeen,
                   eventsForwarded,
                   textEventsForwarded,
-                  durationMs: Date.now() - requestStartAt
+                  durationMs: catchTotalDurationMs
+                })
+                telemetryStore.record({
+                  requestId: requestMeta.requestId,
+                  timestamp: Date.now(),
+                  adapter: adapter.name,
+                  model,
+                  requestModel: body.model || undefined,
+                  mode: "stream",
+                  isResume,
+                  isPassthrough: passthrough,
+                  hasDeferredTools,
+                  deferredToolCount: hasDeferredTools ? deferredToolCount : undefined,
+                  toolCount,
+                  discoveredTools: discoveredTools.size > 0 ? [...discoveredTools] : undefined,
+                  sessionDiscoveredCount: sessionDiscoveredTools.get(resumeSessionId || "")?.size,
+                  lineageType,
+                  messageCount: allMessages.length,
+                  sdkSessionId: resumeSessionId,
+                  status: 499,
+                  queueWaitMs: catchQueueWaitMs,
+                  proxyOverheadMs: upstreamStartAt - requestStartAt - catchQueueWaitMs,
+                  ttfbMs: firstChunkAt ? firstChunkAt - upstreamStartAt : null,
+                  upstreamDurationMs: Date.now() - upstreamStartAt,
+                  totalDurationMs: catchTotalDurationMs,
+                  contentBlocks: eventsForwarded,
+                  textEvents: textEventsForwarded,
+                  error: "client_closed",
                 })
                 return
               }
@@ -1778,6 +1844,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 error.message = `${error.message}\nSubprocess stderr: ${stderrOutput}`
               }
               const errMsg = error instanceof Error ? error.message : String(error)
+
+              // Unconditional stderr log — visible in journalctl without debug env.
+              // Stream failures are otherwise invisible: the SSE error event reaches
+              // the client but nothing is recorded server-side by default.
+              console.error(`[PROXY] ${requestMeta.requestId} stream.failed adapter=${adapter.name} model=${model} ttfb=${firstChunkAt ? firstChunkAt - upstreamStartAt : "null"}ms events=${streamEventsSeen} error=${errMsg.replace(/\n/g, " | ")}`)
+
               claudeLog("upstream.failed", {
                 mode: "stream",
                 model,
@@ -1789,6 +1861,34 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               })
               const streamErr = classifyError(errMsg)
               claudeLog("proxy.anthropic.error", { error: errMsg, classified: streamErr.type })
+
+              telemetryStore.record({
+                requestId: requestMeta.requestId,
+                timestamp: Date.now(),
+                adapter: adapter.name,
+                model,
+                requestModel: body.model || undefined,
+                mode: "stream",
+                isResume,
+                isPassthrough: passthrough,
+                hasDeferredTools,
+                deferredToolCount: hasDeferredTools ? deferredToolCount : undefined,
+                toolCount,
+                discoveredTools: discoveredTools.size > 0 ? [...discoveredTools] : undefined,
+                sessionDiscoveredCount: sessionDiscoveredTools.get(resumeSessionId || "")?.size,
+                lineageType,
+                messageCount: allMessages.length,
+                sdkSessionId: resumeSessionId,
+                status: streamErr.status,
+                queueWaitMs: catchQueueWaitMs,
+                proxyOverheadMs: upstreamStartAt - requestStartAt - catchQueueWaitMs,
+                ttfbMs: firstChunkAt ? firstChunkAt - upstreamStartAt : null,
+                upstreamDurationMs: Date.now() - upstreamStartAt,
+                totalDurationMs: catchTotalDurationMs,
+                contentBlocks: eventsForwarded,
+                textEvents: textEventsForwarded,
+                error: streamErr.type,
+              })
 
               // If we already emitted message_start, close the message cleanly so
               // clients that access usage.input_tokens don't crash on the incomplete response.

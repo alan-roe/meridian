@@ -8,8 +8,17 @@
  * Configurable via CLAUDE_PROXY_WORKDIR env var.
  */
 
-import { describe, it, expect, mock, beforeEach } from "bun:test"
+import { describe, it, expect, mock, beforeEach, beforeAll, afterAll } from "bun:test"
+import { mkdirSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { assistantMessage } from "./helpers"
+
+// Real existing dir on the test host — server-side spawn cwd must exist on
+// this filesystem. See resolveSubprocessCwd in server.ts.
+const TEST_WORKDIR = join(tmpdir(), "meridian-test-workdir-project")
+beforeAll(() => mkdirSync(TEST_WORKDIR, { recursive: true }))
+afterAll(() => rmSync(TEST_WORKDIR, { recursive: true, force: true }))
 
 let mockMessages: any[] = []
 let capturedQueryParams: any = null
@@ -73,7 +82,7 @@ describe("Working directory", () => {
 
   it("should use CLAUDE_PROXY_WORKDIR when set", async () => {
     const original = process.env.CLAUDE_PROXY_WORKDIR
-    process.env.CLAUDE_PROXY_WORKDIR = "/tmp/test-project"
+    process.env.CLAUDE_PROXY_WORKDIR = TEST_WORKDIR
 
     try {
       const app = createTestApp()
@@ -84,7 +93,29 @@ describe("Working directory", () => {
         messages: [{ role: "user", content: "hello" }],
       })).json()
 
-      expect(capturedQueryParams.options.cwd).toBe("/tmp/test-project")
+      expect(capturedQueryParams.options.cwd).toBe(TEST_WORKDIR)
+    } finally {
+      if (original) process.env.CLAUDE_PROXY_WORKDIR = original
+      else delete process.env.CLAUDE_PROXY_WORKDIR
+    }
+  })
+
+  it("falls back to process.cwd() when the client-reported cwd doesn't exist on this server", async () => {
+    const original = process.env.CLAUDE_PROXY_WORKDIR
+    // A path that will not exist on any test host
+    process.env.CLAUDE_PROXY_WORKDIR = "/nonexistent/meridian-test/does-not-exist"
+
+    try {
+      const app = createTestApp()
+      await (await post(app, {
+        model: "claude-sonnet-4-5",
+        max_tokens: 100,
+        stream: false,
+        messages: [{ role: "user", content: "hello" }],
+      })).json()
+
+      // The SDK subprocess must still be spawnable — fall back to process.cwd()
+      expect(capturedQueryParams.options.cwd).toBe(process.cwd())
     } finally {
       if (original) process.env.CLAUDE_PROXY_WORKDIR = original
       else delete process.env.CLAUDE_PROXY_WORKDIR

@@ -7,8 +7,16 @@
  * OpenCode requests on the same proxy.
  */
 
-import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test"
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll } from "bun:test"
+import { mkdirSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { assistantMessage, textBlockStart, textDelta, blockStop, messageDelta, messageStop, messageStart } from "./helpers"
+
+// Real dir that exists on the test host — see resolveSubprocessCwd in server.ts.
+const FORGECODE_CWD = join(tmpdir(), "meridian-test-forgecode-cwd")
+beforeAll(() => mkdirSync(FORGECODE_CWD, { recursive: true }))
+afterAll(() => rmSync(FORGECODE_CWD, { recursive: true, force: true }))
 
 let mockMessages: any[] = []
 let capturedQueryParams: any = null
@@ -50,7 +58,7 @@ const FORGECODE_BODY = {
   system: [
     {
       type: "text",
-      text: "<system_information>\n<operating_system>Darwin</operating_system>\n<current_working_directory>/Users/dev/my-project</current_working_directory>\n<default_shell>/bin/zsh</default_shell>\n<home_directory>/Users/dev</home_directory>\n</system_information>",
+      text: `<system_information>\n<operating_system>Darwin</operating_system>\n<current_working_directory>${FORGECODE_CWD}</current_working_directory>\n<default_shell>/bin/zsh</default_shell>\n<home_directory>/Users/dev</home_directory>\n</system_information>`,
     },
   ],
   messages: [{
@@ -408,7 +416,7 @@ describe("ForgeCode adapter: CWD extraction through proxy", () => {
     // The proxy extracts CWD from the adapter and uses it for fingerprinting
     // and as the working directory for the SDK query
     expect(capturedQueryParams).toBeDefined()
-    expect(capturedQueryParams.options.cwd).toBe("/Users/dev/my-project")
+    expect(capturedQueryParams.options.cwd).toBe(FORGECODE_CWD)
   })
 })
 

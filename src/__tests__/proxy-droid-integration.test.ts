@@ -9,8 +9,26 @@
  * Also verifies OpenCode requests are completely unaffected (backward compat).
  */
 
-import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test"
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll } from "bun:test"
+import { mkdirSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { assistantMessage } from "./helpers"
+
+// Real dirs that exist on the test host — client-sent paths must exist on the
+// server for the SDK subprocess `cwd` to work; see resolveSubprocessCwd in
+// server.ts. Using tmpdir subdirs keeps tests hermetic.
+const DROID_CWD = join(tmpdir(), "meridian-test-droid-cwd")
+const OPENCODE_CWD = join(tmpdir(), "meridian-test-opencode-cwd")
+
+beforeAll(() => {
+  mkdirSync(DROID_CWD, { recursive: true })
+  mkdirSync(OPENCODE_CWD, { recursive: true })
+})
+afterAll(() => {
+  rmSync(DROID_CWD, { recursive: true, force: true })
+  rmSync(OPENCODE_CWD, { recursive: true, force: true })
+})
 
 let mockMessages: any[] = []
 let capturedQueryParams: any = null
@@ -60,7 +78,7 @@ Model: claude-sonnet-4-5-20250514
 Today's date: 2026-03-29
 
 % pwd
-/Users/dev/my-project
+${DROID_CWD}
 
 % ls
 src package.json
@@ -95,7 +113,7 @@ const OPENCODE_BODY = {
   model: "claude-sonnet-4-5-20250929",
   max_tokens: 1024,
   stream: false,
-  system: "<env>\n  Working directory: /Users/dev/opencode-project\n</env>",
+  system: `<env>\n  Working directory: ${OPENCODE_CWD}\n</env>`,
   messages: [{ role: "user", content: "Hello" }],
   tools: [
     { name: "Read", description: "Read a file", input_schema: { type: "object", properties: {} } },
@@ -249,13 +267,13 @@ describe("Droid adapter: CWD extraction from system-reminder", () => {
     const app = createTestApp()
     await (await post(app, DROID_BODY, { "User-Agent": DROID_UA })).json()
     // The proxy passes cwd to the SDK options
-    expect(capturedQueryParams.options.cwd).toBe("/Users/dev/my-project")
+    expect(capturedQueryParams.options.cwd).toBe(DROID_CWD)
   })
 
   it("OpenCode uses CWD from env block in system prompt", async () => {
     const app = createTestApp()
     await (await post(app, OPENCODE_BODY)).json()
-    expect(capturedQueryParams.options.cwd).toBe("/Users/dev/opencode-project")
+    expect(capturedQueryParams.options.cwd).toBe(OPENCODE_CWD)
   })
 })
 
