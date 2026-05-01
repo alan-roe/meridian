@@ -593,6 +593,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           : body.task_budget ? { total: body.task_budget.total ?? body.task_budget } : undefined
         const betas = betaFilter.forwarded
 
+        // Structured output: accept Anthropic-native output_config.format on /v1/messages.
+        // Maps to SDK's outputFormat option (which carries it through to the API).
+        const outputFormatRaw = (body as Record<string, unknown>).output_config as
+          | { format?: { type?: string; schema?: Record<string, unknown> } }
+          | undefined
+        const outputFormat = outputFormatRaw?.format?.type === "json_schema" && outputFormatRaw.format.schema
+          ? { type: "json_schema" as const, schema: outputFormatRaw.format.schema as Record<string, unknown> }
+          : undefined
+
         // Session resume: look up cached Claude SDK session and classify mutation
         const agentSessionId = adapter.getSessionId(c)
         // Scope session keys by profile to isolate resume state across accounts.
@@ -1002,6 +1011,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                       : undefined,
                     advisorModel,
+                    outputFormat,
                   }))) {
                     // Capture Claude Max subscription quota updates emitted by
                     // the SDK as rate_limit_event. We snapshot them in a process-wide
@@ -1049,6 +1059,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                         ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                         : undefined,
                       advisorModel,
+                      outputFormat,
                     }))
                     return
                   }
@@ -1257,6 +1268,19 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 name: tu.name,
                 input: tu.input,
               })
+            }
+          }
+
+          // Structured output: SDK emits the JSON as a synthetic StructuredOutput
+          // tool_use block. Unwrap into a plain text block so clients see clean JSON
+          // (and stop_reason resolves to end_turn instead of tool_use below).
+          if (outputFormat) {
+            const structuredBlock = contentBlocks.find(
+              (b) => b.type === "tool_use" && (b as Record<string, unknown>).name === "StructuredOutput"
+            ) as Record<string, unknown> | undefined
+            if (structuredBlock?.input != null) {
+              contentBlocks.length = 0
+              contentBlocks.push({ type: "text", text: JSON.stringify(structuredBlock.input) })
             }
           }
 
@@ -1473,6 +1497,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                         ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                         : undefined,
                       advisorModel,
+                      outputFormat,
                     }))) {
                       // Same SDK rate-limit capture as the non-stream path.
                       if ((event as any).type === "rate_limit_event") {
@@ -1515,6 +1540,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                           ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                           : undefined,
                         advisorModel,
+                        outputFormat,
                       }))
                       return
                     }
@@ -1608,6 +1634,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               // the key-value pair may span multiple deltas, preventing regex match.
               const taskToolBlockIndices = new Set<number>()
               const taskToolJsonBuffer = new Map<number, string>()
+              // Structured output: track block indices for StructuredOutput tool_use
+              // blocks so input_json_delta can be rewritten as text_delta and the
+              // synthetic tool_use becomes a plain text block on the wire.
+              const structuredOutputIndices = new Set<number>()
 
               // Block index remapping: the SDK resets indices on each turn, but
               // we skip intermediate message_start/stop so the client sees one
@@ -1704,6 +1734,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                           if (eventIndex !== undefined) skipBlockIndices.add(eventIndex)
                           continue
                         }
+                        // Structured output: rewrite the synthetic StructuredOutput
+                        // tool_use as a text block. Subsequent input_json_delta events
+                        // for this index are converted to text_delta below.
+                        if (outputFormat && block.name === "StructuredOutput" && eventIndex !== undefined) {
+                          structuredOutputIndices.add(eventIndex)
+                          ;(event as any).content_block = { type: "text", text: "" }
+                        }
                         if (passthrough && block.name.startsWith(PASSTHROUGH_MCP_PREFIX)) {
                           // Passthrough mode: SDK sent the name WITH the mcp__oc__ prefix.
                           // Strip it so OpenCode sees the bare tool name.
@@ -1751,6 +1788,25 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       if (stopReason === "tool_use" && skipBlockIndices.size > 0) {
                         // All tool_use blocks in this turn were MCP — skip this delta
                         continue
+                      }
+                      // Structured output: the SDK reports stop_reason: tool_use because
+                      // it emitted the StructuredOutput tool_use; on the wire we've
+                      // rewritten it as text, so report end_turn instead.
+                      if (stopReason === "tool_use" && outputFormat && structuredOutputIndices.size > 0) {
+                        ;(event as any).delta.stop_reason = "end_turn"
+                      }
+                    }
+
+                    // Structured output: rewrite input_json_delta → text_delta so the
+                    // unwrapped text block on the client side accumulates JSON text.
+                    if (
+                      eventIndex !== undefined &&
+                      structuredOutputIndices.has(eventIndex) &&
+                      eventType === "content_block_delta"
+                    ) {
+                      const delta = (event as any).delta
+                      if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+                        ;(event as any).delta = { type: "text_delta", text: delta.partial_json }
                       }
                     }
 

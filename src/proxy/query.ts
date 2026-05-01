@@ -108,6 +108,8 @@ export interface QueryContext {
   additionalDirectories?: string[]
   /** Advisor model for server-side advisor tool support */
   advisorModel?: string
+  /** Output format for structured outputs (JSON schema). Maps to SDK outputFormat. */
+  outputFormat?: { type: "json_schema"; schema: Record<string, unknown> }
 }
 
 /**
@@ -215,6 +217,7 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
     mcpServerName, allowedMcpTools, onStderr,
     effort, thinking, taskBudget, betas, settingSources, codeSystemPrompt, clientSystemPrompt,
     memory, dreaming, sharedMemory, maxBudgetUsd, fallbackModel, sdkDebug, additionalDirectories,
+    outputFormat,
   } = ctx
   const cwdNote = buildCwdNote(workingDirectory, clientWorkingDirectory)
 
@@ -313,6 +316,7 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       ...(sdkDebug ? { debug: true } : {}),
       ...(additionalDirectories && additionalDirectories.length > 0 ? { additionalDirectories } : {}),
       ...(ctx.advisorModel ? { advisorModel: ctx.advisorModel } : {}),
+      ...(outputFormat ? { outputFormat } : {}),
     }
   }
 }
