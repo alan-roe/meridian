@@ -308,7 +308,7 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
         // Keychain auth.
         ...(sharedMemory ? stripConfigDir(cleanEnv) : cleanEnv),
         ENABLE_TOOL_SEARCH: hasDeferredTools ? "true" : "false",
-        ...(passthrough ? { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } : {}),
+        ...(stripUpstreamCatalog ? { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } : {}),
         // When running as root (Docker, Unraid, NAS), set IS_SANDBOX=1 to
         // bypass the SDK's root check. Without this, the SDK exits with:
         // "--dangerously-skip-permissions cannot be used with root/sudo"

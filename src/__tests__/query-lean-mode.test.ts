@@ -94,4 +94,19 @@ describe("buildQueryOptions — lean mode", () => {
     }))
     expect(result.options.systemPrompt).toBe("You enrich PIM records.")
   })
+
+  it("sets ENABLE_CLAUDEAI_MCP_SERVERS=false in lean mode (suppresses cloud MCP catalog)", () => {
+    const result = buildQueryOptions(makeContext({ leanMode: true }))
+    expect(result.options.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false")
+  })
+
+  it("sets ENABLE_CLAUDEAI_MCP_SERVERS=false in passthrough mode", () => {
+    const result = buildQueryOptions(makeContext({ passthrough: true, leanMode: false }))
+    expect(result.options.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false")
+  })
+
+  it("does NOT set ENABLE_CLAUDEAI_MCP_SERVERS in plain internal mode", () => {
+    const result = buildQueryOptions(makeContext({ leanMode: false, passthrough: false }))
+    expect(result.options.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBeUndefined()
+  })
 })

@@ -24,6 +24,17 @@ import { normalizeContent } from "../messages"
 
 const MCP_SERVER_NAME = "lean"
 
+/**
+ * Scratch dir the SDK subprocess runs in. Must exist on the proxy host and
+ * be free of `.git` / `CLAUDE.md` / anything the SDK auto-injects into the
+ * model's `<env>` block. Without this override, the subprocess inherits
+ * `/opt/meridian` (the proxy install dir), leaking the host's git status,
+ * branch name, and recent commits into the model's context.
+ *
+ * Override at runtime with MERIDIAN_LEAN_CWD if /tmp is unavailable.
+ */
+const LEAN_CWD = process.env.MERIDIAN_LEAN_CWD || "/tmp/meridian-lean"
+
 export const leanAdapter: AgentAdapter = {
   name: "lean",
 
@@ -32,7 +43,7 @@ export const leanAdapter: AgentAdapter = {
   },
 
   extractWorkingDirectory(_body: any): string | undefined {
-    return undefined
+    return LEAN_CWD
   },
 
   normalizeContent(content: any): string {
