@@ -460,6 +460,51 @@ describe("translateOpenAiToAnthropic", () => {
     expect(result!.tools).toEqual([])
   })
 
+  // --- response_format → output_config (Anthropic-native structured outputs) ---
+
+  it("response_format json_schema → output_config.format on result", () => {
+    const schema = {
+      type: "object",
+      properties: { name: { type: "string" }, age: { type: "number" } },
+      required: ["name", "age"],
+      additionalProperties: false,
+    }
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "Extract" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "Person", schema },
+      },
+    })
+    expect(result).not.toBeNull()
+    expect(result!.output_config).toEqual({
+      format: { type: "json_schema", schema },
+    })
+  })
+
+  it("response_format without json_schema.schema → output_config not set", () => {
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "Hi" }],
+      response_format: { type: "json_schema", json_schema: { name: "X" } },
+    })
+    expect(result!.output_config).toBeUndefined()
+  })
+
+  it("response_format type other than json_schema → output_config not set", () => {
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "Hi" }],
+      response_format: { type: "text", json_schema: { schema: { type: "object" } } },
+    })
+    expect(result!.output_config).toBeUndefined()
+  })
+
+  it("no response_format → output_config not set", () => {
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "Hi" }],
+    })
+    expect(result!.output_config).toBeUndefined()
+  })
+
   // --- summarizeAnthropicContent: exact marker formats in packed history ---
 
   it("packs assistant tool_use into <tool_call name=...> markers", () => {
