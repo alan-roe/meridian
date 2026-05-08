@@ -14,6 +14,7 @@ import { passthroughAdapter } from "./passthrough"
 import { piAdapter } from "./pi"
 import { forgeCodeAdapter } from "./forgecode"
 import { claudeCodeAdapter } from "./claudecode"
+import { leanAdapter } from "./lean"
 
 const ADAPTER_MAP: Record<string, AgentAdapter> = {
   opencode: openCodeAdapter,
@@ -24,6 +25,7 @@ const ADAPTER_MAP: Record<string, AgentAdapter> = {
   forgecode: forgeCodeAdapter,
   "claude-code": claudeCodeAdapter,
   claudecode: claudeCodeAdapter,
+  lean: leanAdapter,
 }
 
 const envDefault = process.env.MERIDIAN_DEFAULT_AGENT || ""

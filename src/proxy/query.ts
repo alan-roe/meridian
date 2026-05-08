@@ -50,6 +50,13 @@ export interface QueryContext {
   claudeExecutable: string
   /** Whether passthrough mode is enabled */
   passthrough: boolean
+  /**
+   * Lean mode: strip the SDK tool catalog and CLAUDE.md from the upstream
+   * payload (same as passthrough), but keep the internal-mode multi-turn
+   * budget so structured-output round-trips work. Mutually exclusive with
+   * passthrough — the lean adapter returns usesPassthrough(): false.
+   */
+  leanMode?: boolean
   /** Whether this is a streaming request */
   stream: boolean
   /** SDK agent definitions extracted from tool descriptions */
@@ -212,13 +219,14 @@ function resolveSystemPrompt(
 export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
   const {
     prompt, model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-    passthrough, stream, sdkAgents, passthroughMcp, cleanEnv, hasDeferredTools,
+    passthrough, leanMode, stream, sdkAgents, passthroughMcp, cleanEnv, hasDeferredTools,
     resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools, incompatibleTools,
     mcpServerName, allowedMcpTools, onStderr,
     effort, thinking, taskBudget, betas, settingSources, codeSystemPrompt, clientSystemPrompt,
     memory, dreaming, sharedMemory, maxBudgetUsd, fallbackModel, sdkDebug, additionalDirectories,
     outputFormat,
   } = ctx
+  const stripUpstreamCatalog = passthrough || leanMode === true
   const cwdNote = buildCwdNote(workingDirectory, clientWorkingDirectory)
 
   const allBlockedTools = [...blockedTools, ...incompatibleTools]
@@ -231,38 +239,42 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       // Hosts like OpenCode embed Bun, so the check fires even when `bun`
       // is not in PATH — causing subprocess spawns to fail.
       executable: "node" as const,
-      maxTurns: passthrough
-        ? computePassthroughMaxTurns(resumeSessionId, hasDeferredTools, ctx.advisorModel)
-        : 200,
+      maxTurns: leanMode
+        ? 30
+        : passthrough
+          ? computePassthroughMaxTurns(resumeSessionId, hasDeferredTools, ctx.advisorModel)
+          : 200,
       cwd: workingDirectory,
       model,
       pathToClaudeCodeExecutable: claudeExecutable,
       ...(stream ? { includePartialMessages: true } : {}),
       permissionMode: "bypassPermissions" as const,
       allowDangerouslySkipPermissions: true,
-      ...resolveSystemPrompt(systemContext, passthrough, settingSources, codeSystemPrompt, clientSystemPrompt, cwdNote),
-      ...(passthrough
+      ...resolveSystemPrompt(systemContext, stripUpstreamCatalog, settingSources, codeSystemPrompt, clientSystemPrompt, cwdNote),
+      ...(stripUpstreamCatalog
         ? {
             // Strip the SDK's ~25k-token built-in tool catalog from the
             // upstream request. Passthrough mode never intends to invoke
             // SDK built-ins (Read/Write/Bash/etc.) — those are the calling
-            // client's responsibility. `disallowedTools` below blocks
-            // invocation at runtime; it does NOT remove the definitions
-            // from the upstream payload. Setting `tools: []` elides the
-            // catalog from the request body. Closes #489 (diagnosis by
-            // @albe-jj).
+            // client's responsibility. Lean mode runs in internal mode but
+            // also doesn't want the catalog (only WebSearch/WebFetch for
+            // retrieval-augmented structured output). `disallowedTools`
+            // below blocks invocation at runtime; it does NOT remove the
+            // definitions from the upstream payload. Setting `tools: []`
+            // elides the catalog from the request body. Closes #489
+            // (diagnosis by @albe-jj).
             tools: [],
             // Explicitly disable claude-code's default settings loading.
             // Without this, claude-code falls back to its built-in default
             // (load user + project + local) and slurps CLAUDE.md from the
             // proxy host's cwd into the system prompt — ~hundreds-to-
             // thousands of tokens of unintended context that has no
-            // business in chat-style passthrough requests (LiteLLM, custom
-            // chat apps, etc.). Empty array → SDK emits `--setting-sources=`
-            // → subprocess loads nothing. The lower-down `settingSources &&
-            // settingSources.length > 0` block still wins when the user
-            // sets `claudeMd` to "project" or "full" because object spread
-            // order gives the later assignment the final word.
+            // business in chat-style passthrough or lean requests. Empty
+            // array → SDK emits `--setting-sources=` → subprocess loads
+            // nothing. The lower-down `settingSources && settingSources.length > 0`
+            // block still wins when the user sets `claudeMd` to "project"
+            // or "full" because object spread order gives the later
+            // assignment the final word.
             settingSources: [],
             disallowedTools: [...allBlockedTools],
             ...(passthroughMcp ? {

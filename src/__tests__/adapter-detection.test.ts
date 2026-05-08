@@ -14,6 +14,7 @@ import { piAdapter } from "../proxy/adapters/pi"
 import { passthroughAdapter } from "../proxy/adapters/passthrough"
 import { forgeCodeAdapter } from "../proxy/adapters/forgecode"
 import { claudeCodeAdapter } from "../proxy/adapters/claudecode"
+import { leanAdapter } from "../proxy/adapters/lean"
 
 function makeContext(userAgent: string, extraHeaders?: Record<string, string>): any {
   const allHeaders: Record<string, string> = {}
@@ -227,6 +228,11 @@ describe("detectAdapter — x-meridian-agent header override", () => {
 
   it("accepts 'claudecode' as an alias for 'claude-code'", () => {
     expect(detectAdapter(makeContext("", { "x-meridian-agent": "claudecode" }))).toBe(claudeCodeAdapter)
+  })
+
+  it("returns leanAdapter when x-meridian-agent is 'lean'", () => {
+    expect(detectAdapter(makeContext("", { "x-meridian-agent": "lean" }))).toBe(leanAdapter)
+    expect(leanAdapter.name).toBe("lean")
   })
 
   it("is case-insensitive on header value", () => {

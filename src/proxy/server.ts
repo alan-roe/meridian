@@ -808,6 +808,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       const passthrough = pipelineCtx.passthrough !== undefined
         ? pipelineCtx.passthrough
         : envBool("PASSTHROUGH")
+      const leanMode = adapter.name === "lean"
       // SDK setting sources — controls CLAUDE.md and user settings loading.
       const settingSources: import("@anthropic-ai/claude-agent-sdk").SettingSource[] =
         envBool("LOAD_CONTEXT") || sdkFeatures.claudeMd === "full"
@@ -1000,7 +1001,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 try {
                   for await (const event of query(buildQueryOptions({
                     prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                    passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
+                    passthrough, leanMode, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
                     resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                     effort, thinking, taskBudget, betas, settingSources,
                     codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -1048,7 +1049,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     yield* query(buildQueryOptions({
                       prompt: buildFreshPrompt(allMessages, sanitizeOpts),
                       model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                      passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
+                      passthrough, leanMode, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
                       resumeSessionId: undefined, isUndo: false, undoRollbackUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, betas, settingSources,
                       codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -1486,7 +1487,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   try {
                     for await (const event of query(buildQueryOptions({
                       prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                      passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
+                      passthrough, leanMode, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
                       resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, betas, settingSources,
                       codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -1529,7 +1530,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       yield* query(buildQueryOptions({
                         prompt: buildFreshPrompt(allMessages, sanitizeOpts),
                         model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                        passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
+                        passthrough, leanMode, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
                         resumeSessionId: undefined, isUndo: false, undoRollbackUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                         effort, thinking, taskBudget, betas, settingSources,
                         codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,

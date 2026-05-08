@@ -5,6 +5,7 @@ import { droidTransforms } from "./droid"
 import { piTransforms } from "./pi"
 import { forgeCodeTransforms } from "./forgecode"
 import { passthroughTransforms } from "./passthrough"
+import { leanTransforms } from "./lean"
 
 const ADAPTER_TRANSFORMS: Record<string, readonly Transform[]> = {
   opencode: openCodeTransforms,
@@ -13,6 +14,7 @@ const ADAPTER_TRANSFORMS: Record<string, readonly Transform[]> = {
   pi: piTransforms,
   forgecode: forgeCodeTransforms,
   passthrough: passthroughTransforms,
+  lean: leanTransforms,
 }
 
 export function getAdapterTransforms(adapterName: string): readonly Transform[] {
