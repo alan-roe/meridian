@@ -256,14 +256,14 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
             // Strip the SDK's ~25k-token built-in tool catalog from the
             // upstream request. Passthrough mode never intends to invoke
             // SDK built-ins (Read/Write/Bash/etc.) — those are the calling
-            // client's responsibility. Lean mode runs in internal mode but
-            // also doesn't want the catalog (only WebSearch/WebFetch for
-            // retrieval-augmented structured output). `disallowedTools`
-            // below blocks invocation at runtime; it does NOT remove the
-            // definitions from the upstream payload. Setting `tools: []`
-            // elides the catalog from the request body. Closes #489
-            // (diagnosis by @albe-jj).
-            tools: [],
+            // client's responsibility. Lean mode runs in internal mode and
+            // wants only WebSearch/WebFetch loaded for retrieval-augmented
+            // structured output; passing `tools: []` would elide those too,
+            // so lean explicitly lists them while passthrough sends `[]`.
+            // `disallowedTools` below blocks invocation at runtime; it does
+            // NOT remove the definitions from the upstream payload. Closes
+            // #489 (diagnosis by @albe-jj).
+            tools: leanMode ? ["WebSearch", "WebFetch"] : [],
             // Explicitly disable claude-code's default settings loading.
             // Without this, claude-code falls back to its built-in default
             // (load user + project + local) and slurps CLAUDE.md from the

@@ -34,8 +34,13 @@ function makeContext(overrides: Partial<QueryContext> = {}): QueryContext {
 }
 
 describe("buildQueryOptions — lean mode", () => {
-  it("sets tools: [] (strips upstream catalog) when leanMode is true", () => {
+  it("sets tools: [WebSearch, WebFetch] (lean catalog) when leanMode is true", () => {
     const result = buildQueryOptions(makeContext({ leanMode: true }))
+    expect(result.options.tools).toEqual(["WebSearch", "WebFetch"])
+  })
+
+  it("sets tools: [] (full strip) in passthrough mode", () => {
+    const result = buildQueryOptions(makeContext({ passthrough: true, leanMode: false }))
     expect(result.options.tools).toEqual([])
   })
 
