@@ -70,6 +70,12 @@ const ADAPTER_DEFAULTS: Record<string, Partial<AdapterFeatures>> = {
   passthrough: {
     codeSystemPrompt: false,
   },
+  // The `lean` adapter is meant for minimum-context structured-output
+  // endpoints. Same reasoning as passthrough — the ~7k-token Claude Code
+  // preset has no place in API-direct calls that just want JSON back.
+  lean: {
+    codeSystemPrompt: false,
+  },
 }
 
 function getConfigPath(): string {
@@ -133,7 +139,7 @@ export function getFeaturesForAdapter(adapterName: string): AdapterFeatures {
  * Get the full config for all adapters (for the settings UI).
  */
 export function getAllFeatureConfigs(): Record<string, AdapterFeatures> {
-  const adapters = ["opencode", "crush", "forgecode", "pi", "droid", "passthrough"]
+  const adapters = ["opencode", "crush", "forgecode", "pi", "droid", "passthrough", "lean"]
   const result: Record<string, AdapterFeatures> = {}
   for (const name of adapters) {
     result[name] = getFeaturesForAdapter(name)

@@ -110,3 +110,10 @@ describe("buildQueryOptions — lean mode", () => {
     expect(result.options.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBeUndefined()
   })
 })
+
+describe("getFeaturesForAdapter — lean defaults", () => {
+  it("defaults codeSystemPrompt: false for lean (skip the 7k Claude Code preset)", async () => {
+    const { getFeaturesForAdapter } = await import("../proxy/sdkFeatures")
+    expect(getFeaturesForAdapter("lean").codeSystemPrompt).toBe(false)
+  })
+})
